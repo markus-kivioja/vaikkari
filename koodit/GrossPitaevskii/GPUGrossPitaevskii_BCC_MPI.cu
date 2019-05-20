@@ -11,6 +11,7 @@
 #include <iostream>
 #include <sstream>
 #include <unistd.h>
+#include <string>
 
 ddouble RATIO = 0.1;
 ddouble KAPPA = 10;
@@ -1200,8 +1201,14 @@ int main ( int argc, char** argv )
 	maxz = state.searchMaxZ(eps);
 #endif
 
-	const int number_of_iterations = 5;
-	const ddouble iteration_period = 0.5;
+	int number_of_iterations = 5;
+	ddouble iteration_period = 0.5;
+
+	if (argc > 1)
+		number_of_iterations = std::atoi(argv[1]);
+	if (argc > 2)
+		iteration_period = std::stod(argv[2]);
+
 	const ddouble block_scale = PIx2 / (20.0 * sqrt(state.integrateCurvature()));
 
 	// integrate in time using DEC
