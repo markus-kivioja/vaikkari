@@ -1,0 +1,3 @@
+#!/bin/bash
+
+srun -N1 -pgpu --gres=gpu:p100:4 ./Run

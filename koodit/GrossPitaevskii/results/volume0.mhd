@@ -1,0 +1,13 @@
+ObjectType              = Image
+NDims                   = 3
+BinaryData              = True
+CompressedData          = False
+BinaryDataByteOrderMSB  = False
+TransformMatrix         = 1 0 0 0 1 0 0 0 1
+Offset                  = -8.80648 -8.80648 -29.9816
+CenterOfRotation        = 0 0 0
+DimSize                 = 89 89 303
+ElementSpacing          = 0.197898 0.197898 0.197898
+ElementNumberOfChannels = 1
+ElementType             = MET_USHORT
+ElementDataFile         = volume0.mhd.raw

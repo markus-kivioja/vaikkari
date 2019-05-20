@@ -1,0 +1,1 @@
+nvcc -ccbin=mpic++ -O3 -o RunTest -Wno-deprecated-gpu-targets -Xcompiler -Wno-vla MpiTest.cu
