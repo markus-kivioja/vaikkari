@@ -1053,7 +1053,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaEventRecord(event_d3_to_d2, stream0_d3);
 
             cudaDeviceSynchronize();
-			/*if (!first)
+			if (!first)
 			{
                 cudaSetDevice(0);
 				MPI_Isend(((char*)originalOddPsi_d0) + 1 * d_oddPsi_d0.slicePitch, d_oddPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_SEND_REQUEST]);
@@ -1072,7 +1072,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			if (!last)
 			{
 				MPI_Wait(&requests[BACKWARD_RECEIVE_REQUEST], MPI_STATUSES_IGNORE);
-			}*/
+			}
 
 			// update even values
 			cudaSetDevice(0);
@@ -1112,7 +1112,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaEventRecord(event_d3_to_d2, stream0_d3);
 
             cudaDeviceSynchronize();
-			/*if (!first)
+			if (!first)
 			{
                 cudaSetDevice(0);
 				MPI_Isend(((char*)originalEvenPsi_d0) + 1 * d_evenPsi_d0.slicePitch, d_evenPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_SEND_REQUEST]);
@@ -1131,7 +1131,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			if (!last)
 			{
 				MPI_Wait(&requests[BACKWARD_RECEIVE_REQUEST], MPI_STATUSES_IGNORE);
-			}*/
+			}
 		}
 		// Copy back from device memory to host memory
 		cudaSetDevice(0);
