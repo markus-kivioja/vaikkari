@@ -319,7 +319,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 
 	// initialize stationary state
 	Buffer<Complex> Psi0(vsize + 2 * bxysize, Complex(0,0)); // initial discrete wave function
-	Buffer<ddouble> pot(vsize, 0.0); // discrete potential multiplied by time step size
+	Buffer<ddouble> pot(vsize + 2 * bxysize, 0.0); // discrete potential multiplied by time step size
 	ddouble g = state.getG(); // effective interaction strength
 	ddouble maxpot = 0.0; // maximal value of potential
 	for(k=0; k<zsize; k++)
@@ -330,8 +330,8 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			{
 				for(l=0; l<bsize; l++)
 				{
-                    const uint psi_ii = (k + 1) * bxysize + j * bxsize + i * bsize + l;
-					const uint ii = k * bxysize + j * bxsize + i * bsize + l;
+					const uint psi_ii = (k + 1) * bxysize + j * bxsize + i * bsize + l;
+					const uint ii = (k + 1) * bxysize + j * bxsize + i * bsize + l;
 					const Vector3 p(p0.x + block_scale * (i * BLOCK_WIDTH.x + bpos[l].x), p0.y + block_scale * (j * BLOCK_WIDTH.y + bpos[l].y), p0.z + block_scale * ((k + rank * zsize) * BLOCK_WIDTH.z + bpos[l].z)); // position
 					Psi0[psi_ii] = state.getPsi(p);
 					pot[ii] = potentialV3(p);
@@ -471,7 +471,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	g *= time_step_size;
 	lapfac *= time_step_size;
 	lapfac0 *= time_step_size;
-	for(i=0; i<vsize; i++) pot[i] *= time_step_size;
+	for(i=0; i<vsize; i++) pot[i] *= time_step_size; // TODO: THE BUG MIGHT BE HERE!!! The last z-slices don't get multiplied by time_step_size
 
 	int2* d_lapind_d0;
 	cudaSetDevice(0);
@@ -520,7 +520,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			{
 				for(l=0; l<bsize; l++)
 				{		
-					const uint srcI = k * bxysize + j * bxsize + i * bsize + l; // TODO: Possible bug here, doesn't copy the two last slices (the one calculated by this rank and the one copied from the next rank)
+					const uint srcI = k * bxysize + j * bxsize + i * bsize + l;
 					const uint dstI = k * dxsize*dysize + (j+1) * dxsize + (i+1);
 					const Vector2 c = 0.01 * rnd.getUniformCircle();
 					const Complex noise(c.x + 1.0, c.y);
