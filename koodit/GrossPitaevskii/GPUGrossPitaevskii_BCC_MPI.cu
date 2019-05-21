@@ -1055,16 +1055,17 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaMemcpy3DAsync(&odd_d3_to_d2, stream0_d3);
 			cudaEventRecord(event_d3_to_d2, stream0_d3);
 
-			cudaDeviceSynchronize();
 			if (!first)
 			{
 				cudaSetDevice(deviceOffset + 0);
+				cudaStreamSynchronize(stream0_d0);
 				MPI_Isend(((char*)originalOddPsi_d0) + 1 * d_oddPsi_d0.slicePitch, d_oddPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_SEND_REQUEST]);
 				MPI_Irecv(((char*)originalOddPsi_d0) + 0 * d_oddPsi_d0.slicePitch, d_oddPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_RECEIVE_REQUEST]);
 			}
 			if (!last)
 			{
 				cudaSetDevice(deviceOffset + 3);
+				cudaStreamSynchronize(stream0_d3);
 				MPI_Isend(((char*)originalOddPsi_d3) + (dzsize_d3 - 2) * d_oddPsi_d3.slicePitch, d_oddPsi_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_SEND_REQUEST]);
 				MPI_Irecv(((char*)originalOddPsi_d3) + (dzsize_d3 - 1) * d_oddPsi_d3.slicePitch, d_oddPsi_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_RECEIVE_REQUEST]);
 			}
@@ -1114,16 +1115,17 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaMemcpy3DAsync(&even_d3_to_d2, stream0_d3);
 			cudaEventRecord(event_d3_to_d2, stream0_d3);
 
-            cudaDeviceSynchronize();
 			if (!first)
 			{
 				cudaSetDevice(deviceOffset + 0);
+				cudaStreamSynchronize(stream0_d0);
 				MPI_Isend(((char*)originalEvenPsi_d0) + 1 * d_evenPsi_d0.slicePitch, d_evenPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_SEND_REQUEST]);
 				MPI_Irecv(((char*)originalEvenPsi_d0) + 0 * d_evenPsi_d0.slicePitch, d_evenPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_RECEIVE_REQUEST]);
 			}
 			if (!last)
 			{
 				cudaSetDevice(deviceOffset + 3);
+				cudaStreamSynchronize(stream0_d3);
 				MPI_Isend(((char*)originalEvenPsi_d3) + (dzsize_d3 - 2) * d_evenPsi_d3.slicePitch, d_evenPsi_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_SEND_REQUEST]);
 				MPI_Irecv(((char*)originalEvenPsi_d3) + (dzsize_d3 - 1) * d_evenPsi_d3.slicePitch, d_evenPsi_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_RECEIVE_REQUEST]);
 			}
