@@ -860,6 +860,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	cudaStream_t stream0_d3;
 	
 	cudaEvent_t event_d0_to_d1;
+	cudaEvent_t event_d0_kernel;
 	
 	cudaEvent_t event_d1_to_d0;
 	cudaEvent_t event_d1_to_d2;
@@ -870,11 +871,13 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	cudaEvent_t event_d2_kernel;
 	
 	cudaEvent_t event_d3_to_d2;
+	cudaEvent_t event_d3_kernel;
 	
 	cudaSetDevice(deviceOffset + 0);
 	cudaStreamCreate(&stream0_d0);
 	cudaEventCreate(&event_d0_to_d1);
 	cudaEventRecord(event_d0_to_d1, stream0_d0);
+	cudaEventCreate(&event_d0_kernel);
 	
 	cudaSetDevice(deviceOffset + 1);
 	cudaStreamCreate(&stream0_d1);
@@ -898,6 +901,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	cudaStreamCreate(&stream0_d3);
 	cudaEventCreate(&event_d3_to_d2);
 	cudaEventRecord(event_d3_to_d2, stream0_d3);
+	cudaEventCreate(&event_d3_kernel);
 
 	d_cudaEvenPsi_d0.ptr = ((char*)d_cudaEvenPsi_d0.ptr) + d_evenPsi_d0.slicePitch;
 	h_cudaEvenPsi_d0.ptr = ((BlockPsis*)h_cudaEvenPsi_d0.ptr) + dxsize * dysize;
@@ -1022,6 +1026,11 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaSetDevice(deviceOffset + 0);
 			cudaStreamWaitEvent(stream0_d0, event_d1_to_d0, 0);
 			update<<<dimGrid_d0, dimBlock, 0, stream0_d0>>>(d_oddPsi_d0, d_evenPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensions_d0);
+			cudaEventRecord(event_d0_kernel, stream0_d0);
+			cudaSetDevice(deviceOffset + 3);
+			cudaStreamWaitEvent(stream0_d3, event_d2_to_d3, 0);
+			update<<<dimGrid_d3, dimBlock, 0, stream0_d3>>>(d_oddPsi_d3, d_evenPsi_d3, d_pot_d3, d_lapind_d3, lapfacs, g, dimensions_d3);
+			cudaEventRecord(event_d3_kernel, stream0_d3);
 			cudaSetDevice(deviceOffset + 1);
 			cudaStreamWaitEvent(stream0_d1, event_d0_to_d1, 0);
 			cudaStreamWaitEvent(stream0_d1, event_d2_to_d1, 0);
@@ -1032,9 +1041,6 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaStreamWaitEvent(stream0_d2, event_d3_to_d2, 0);
 			update<<<dimGrid_d2, dimBlock, 0, stream0_d2>>>(d_oddPsi_d2, d_evenPsi_d2, d_pot_d2, d_lapind_d2, lapfacs, g, dimensions_d2);
 			cudaEventRecord(event_d2_kernel, stream0_d2);
-			cudaSetDevice(deviceOffset + 3);
-			cudaStreamWaitEvent(stream0_d3, event_d2_to_d3, 0);
-			update<<<dimGrid_d3, dimBlock, 0, stream0_d3>>>(d_oddPsi_d3, d_evenPsi_d3, d_pot_d3, d_lapind_d3, lapfacs, g, dimensions_d3);
 
 			cudaSetDevice(deviceOffset + 0);
 			cudaMemcpy3DAsync(&odd_d0_to_d1, stream0_d0);
@@ -1058,16 +1064,16 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			if (!first)
 			{
 				cudaSetDevice(deviceOffset + 0);
-				cudaStreamSynchronize(stream0_d0);
-				MPI_Isend(((char*)originalOddPsi_d0) + 1 * d_oddPsi_d0.slicePitch, d_oddPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_SEND_REQUEST]);
 				MPI_Irecv(((char*)originalOddPsi_d0) + 0 * d_oddPsi_d0.slicePitch, d_oddPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_RECEIVE_REQUEST]);
+				cudaEventSynchronize(event_d0_kernel);
+				MPI_Isend(((char*)originalOddPsi_d0) + 1 * d_oddPsi_d0.slicePitch, d_oddPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_SEND_REQUEST]);
 			}
 			if (!last)
 			{
 				cudaSetDevice(deviceOffset + 3);
-				cudaStreamSynchronize(stream0_d3);
-				MPI_Isend(((char*)originalOddPsi_d3) + (dzsize_d3 - 2) * d_oddPsi_d3.slicePitch, d_oddPsi_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_SEND_REQUEST]);
 				MPI_Irecv(((char*)originalOddPsi_d3) + (dzsize_d3 - 1) * d_oddPsi_d3.slicePitch, d_oddPsi_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_RECEIVE_REQUEST]);
+				cudaEventSynchronize(event_d3_kernel);
+				MPI_Isend(((char*)originalOddPsi_d3) + (dzsize_d3 - 2) * d_oddPsi_d3.slicePitch, d_oddPsi_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_SEND_REQUEST]);
 			}
 			if (!first)
 			{
@@ -1082,6 +1088,11 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaSetDevice(deviceOffset + 0);
 			cudaStreamWaitEvent(stream0_d0, event_d1_to_d0, 0);
 			update<<<dimGrid_d0, dimBlock, 0, stream0_d0>>>(d_evenPsi_d0, d_oddPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensions_d0);
+			cudaEventRecord(event_d0_kernel, stream0_d0);
+			cudaSetDevice(deviceOffset + 3);
+			cudaStreamWaitEvent(stream0_d3, event_d2_to_d3, 0);
+			update<<<dimGrid_d3, dimBlock, 0, stream0_d3>>>(d_evenPsi_d3, d_oddPsi_d3, d_pot_d3, d_lapind_d3, lapfacs, g, dimensions_d3);
+			cudaEventRecord(event_d3_kernel, stream0_d3);
 			cudaSetDevice(deviceOffset + 1);
 			cudaStreamWaitEvent(stream0_d1, event_d0_to_d1, 0);
 			cudaStreamWaitEvent(stream0_d1, event_d2_to_d1, 0);
@@ -1092,9 +1103,6 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaStreamWaitEvent(stream0_d2, event_d3_to_d2, 0);
 			update<<<dimGrid_d2, dimBlock, 0, stream0_d2>>>(d_evenPsi_d2, d_oddPsi_d2, d_pot_d2, d_lapind_d2, lapfacs, g, dimensions_d2);
 			cudaEventRecord(event_d2_kernel, stream0_d2);
-			cudaSetDevice(deviceOffset + 3);
-			cudaStreamWaitEvent(stream0_d3, event_d2_to_d3, 0);
-			update<<<dimGrid_d3, dimBlock, 0, stream0_d3>>>(d_evenPsi_d3, d_oddPsi_d3, d_pot_d3, d_lapind_d3, lapfacs, g, dimensions_d3);
 
 			cudaSetDevice(deviceOffset + 0);
 			cudaMemcpy3DAsync(&even_d0_to_d1, stream0_d0);
@@ -1118,16 +1126,16 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			if (!first)
 			{
 				cudaSetDevice(deviceOffset + 0);
-				cudaStreamSynchronize(stream0_d0);
-				MPI_Isend(((char*)originalEvenPsi_d0) + 1 * d_evenPsi_d0.slicePitch, d_evenPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_SEND_REQUEST]);
 				MPI_Irecv(((char*)originalEvenPsi_d0) + 0 * d_evenPsi_d0.slicePitch, d_evenPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_RECEIVE_REQUEST]);
+				cudaEventSynchronize(event_d0_kernel);
+				MPI_Isend(((char*)originalEvenPsi_d0) + 1 * d_evenPsi_d0.slicePitch, d_evenPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_SEND_REQUEST]);
 			}
 			if (!last)
 			{
 				cudaSetDevice(deviceOffset + 3);
-				cudaStreamSynchronize(stream0_d3);
-				MPI_Isend(((char*)originalEvenPsi_d3) + (dzsize_d3 - 2) * d_evenPsi_d3.slicePitch, d_evenPsi_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_SEND_REQUEST]);
 				MPI_Irecv(((char*)originalEvenPsi_d3) + (dzsize_d3 - 1) * d_evenPsi_d3.slicePitch, d_evenPsi_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_RECEIVE_REQUEST]);
+				cudaEventSynchronize(event_d3_kernel);
+				MPI_Isend(((char*)originalEvenPsi_d3) + (dzsize_d3 - 2) * d_evenPsi_d3.slicePitch, d_evenPsi_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_SEND_REQUEST]);
 			}
 			if (!first)
 			{
