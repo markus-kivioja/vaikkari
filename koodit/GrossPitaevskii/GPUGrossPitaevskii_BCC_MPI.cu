@@ -97,11 +97,11 @@ void getPositions(Buffer<Vector3> &pos)
 
 ddouble getLaplacian(Buffer<int2> &ind, const int nx, const int ny, const int nz) // nx, ny, nz in bytes
 {
-	ind.resize(48);
+	ind.resize(INDICES_PER_BLOCK);
     // Primary faces of the 1. dual node
 	ind[0] = make_int2(0, 9);
 	ind[1] = make_int2(0, 10);
-	ind[2] = make_int2(nz - nx, 2);
+	ind[2] = make_int2(nz - nx, 2); // Needed to be sent from d0
 	ind[3] = make_int2(-nx, 3);
 
     // Primary faces of the 2. dual node
@@ -113,8 +113,8 @@ ddouble getLaplacian(Buffer<int2> &ind, const int nx, const int ny, const int nz
     // Primary faces of the 3. dual node
 	ind[8] = make_int2(0, 1);
 	ind[9] = make_int2(0, 4);
-	ind[10] = make_int2(-nz + nx, 0);
-	ind[11] = make_int2(-nz, 11);
+	ind[10] = make_int2(-nz + nx, 0); // Needed to be sent from d3
+	ind[11] = make_int2(-nz, 11); // Needed to be sent from d3
 
 	// Primary faces of the 4. dual node
     ind[12] = make_int2(0, 1);
@@ -137,8 +137,8 @@ ddouble getLaplacian(Buffer<int2> &ind, const int nx, const int ny, const int nz
     // Primary faces of the 7. dual node
 	ind[24] = make_int2(0, 5);
 	ind[25] = make_int2(0, 8);
-	ind[26] = make_int2(-nz + ny, 9);
-	ind[27] = make_int2(-nz, 10);
+	ind[26] = make_int2(-nz + ny, 9); // Needed to be sent from d3
+	ind[27] = make_int2(-nz, 10); // Needed to be sent from d3
 
     // Primary faces of the 8. dual node
 	ind[28] = make_int2(0, 5);
@@ -155,19 +155,19 @@ ddouble getLaplacian(Buffer<int2> &ind, const int nx, const int ny, const int nz
     // Primary faces of the 10. dual node
 	ind[36] = make_int2(0, 0);
 	ind[37] = make_int2(0, 11);
-	ind[38] = make_int2(nz - ny, 6);
+	ind[38] = make_int2(nz - ny, 6); // Needed to be sent from d0
 	ind[39] = make_int2(-ny, 7);
 
     // Primary faces of the 11. dual node
 	ind[40] = make_int2(0, 0);
 	ind[41] = make_int2(0, 11);
-	ind[42] = make_int2(nz, 6);
+	ind[42] = make_int2(nz, 6); // Needed to be sent from d0
 	ind[43] = make_int2(0, 7);
 
     // Primary faces of the 12. dual node
 	ind[44] = make_int2(0, 9);
 	ind[45] = make_int2(0, 10);
-	ind[46] = make_int2(nz, 2);
+	ind[46] = make_int2(nz, 2); // Needed to be sent from d0
 	ind[47] = make_int2(0, 3);
 
 	return 1.5;
@@ -176,6 +176,16 @@ ddouble getLaplacian(Buffer<int2> &ind, const int nx, const int ny, const int nz
 struct BlockPsis
 {
 	double2 values[VALUES_IN_BLOCK]; 
+};
+
+struct MsgPsis_d0
+{
+	double2 values[2];
+};
+
+struct MsgPsis_d3
+{
+	double2 values[4];
 };
 
 struct BlockPots
@@ -204,6 +214,108 @@ inline __host__ __device__ double2 operator*(double b, double2 a)
 {
     return make_double2(b * a.x, b * a.y);
 }
+
+__global__ void updateEnd_d0(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuffer, PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr potentials, int2* lapInd, double2 lapfacs, double g, uint3 dimensions)
+{
+	size_t xid = blockIdx.x * blockDim.x + threadIdx.x;
+	size_t yid = blockIdx.y * blockDim.y + threadIdx.y;
+	size_t zid = blockIdx.z * blockDim.z + threadIdx.z;
+
+	// Load Laplacian indices into LDS // TODO: Load prevStep also into LDS?
+	__shared__ int2 ldsLapInd[INDICES_PER_BLOCK];
+	size_t threadIdxInBlock = blockDim.x * blockDim.y * threadIdx.z + blockDim.x * threadIdx.y + threadIdx.x;
+	if (threadIdxInBlock < INDICES_PER_BLOCK)
+	{
+		ldsLapInd[threadIdxInBlock] = lapInd[threadIdxInBlock];
+	}
+	__syncthreads();
+
+	size_t dataZid = zid / VALUES_IN_BLOCK; // One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
+
+	// Exit leftover threads
+	if (xid >= dimensions.x || yid >= dimensions.y || dataZid >= dimensions.z)
+	{
+		return;
+	}
+
+	// Calculate the pointers for this block
+	char* prevPsi = prevStep.ptr + prevStep.slicePitch * dataZid + prevStep.pitch * yid + sizeof(BlockPsis) * xid;
+	BlockPsis* nextPsi = (BlockPsis*)(nextStep.ptr + nextStep.slicePitch * dataZid + nextStep.pitch * yid) + xid;
+	MsgPsis_d0* msgSend = (MsgPsis_d0*)(msgSendBuffer.ptr + msgSendBuffer.slicePitch * dataZid + msgSendBuffer.pitch * yid) + xid;
+	MsgPsis_d0* msgReceive = (MsgPsis_d0*)(msgReceiveBuffer.ptr + msgReceiveBuffer.slicePitch * dataZid + msgReceiveBuffer.pitch * yid) + xid;
+	BlockPots* pot = (BlockPots*)(potentials.ptr + potentials.slicePitch * dataZid + potentials.pitch * yid) + xid;
+
+	// Update psi
+	size_t dualNodeId = zid % VALUES_IN_BLOCK; // Dual node id. One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
+
+    // 4 primary faces
+	uint face = dualNodeId * FACE_COUNT;
+	double2 sum =  ((BlockPsis*)(prevPsi + ldsLapInd[face].x))->values[ldsLapInd[face++].y];
+	        sum += ((BlockPsis*)(prevPsi + ldsLapInd[face].x))->values[ldsLapInd[face++].y];
+	        sum += ((BlockPsis*)(prevPsi + ldsLapInd[face].x))->values[ldsLapInd[face++].y];
+	        sum += ((BlockPsis*)(prevPsi + ldsLapInd[face].x))->values[ldsLapInd[face++].y];
+
+	double2 prev = ((BlockPsis*)prevPsi)->values[dualNodeId];
+	double normsq = prev.x * prev.x + prev.y * prev.y;
+	sum = lapfacs.x * sum + (lapfacs.y + pot->values[dualNodeId] + g * normsq) * prev;
+
+	nextPsi->values[dualNodeId] += make_double2(sum.y, -sum.x);
+
+	if (dualNodeId == 2) msgSend->values[0] = nextPsi->values[dualNodeId];
+	else if (dualNodeId == 6) msgSend->values[1] = nextPsi->values[dualNodeId];
+};
+
+__global__ void updateEnd_d3(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuffer, PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr potentials, int2* lapInd, double2 lapfacs, double g, uint3 dimensions)
+{
+	size_t xid = blockIdx.x * blockDim.x + threadIdx.x;
+	size_t yid = blockIdx.y * blockDim.y + threadIdx.y;
+	size_t zid = blockIdx.z * blockDim.z + threadIdx.z;
+
+	// Load Laplacian indices into LDS // TODO: Load prevStep also into LDS?
+	__shared__ int2 ldsLapInd[INDICES_PER_BLOCK];
+	size_t threadIdxInBlock = blockDim.x * blockDim.y * threadIdx.z + blockDim.x * threadIdx.y + threadIdx.x;
+	if (threadIdxInBlock < INDICES_PER_BLOCK)
+	{
+		ldsLapInd[threadIdxInBlock] = lapInd[threadIdxInBlock];
+	}
+	__syncthreads();
+
+	size_t dataZid = zid / VALUES_IN_BLOCK; // One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
+
+	// Exit leftover threads
+	if (xid >= dimensions.x || yid >= dimensions.y || dataZid >= dimensions.z)
+	{
+		return;
+	}
+
+	// Calculate the pointers for this block
+	char* prevPsi = prevStep.ptr + prevStep.slicePitch * dataZid + prevStep.pitch * yid + sizeof(BlockPsis) * xid;
+	BlockPsis* nextPsi = (BlockPsis*)(nextStep.ptr + nextStep.slicePitch * dataZid + nextStep.pitch * yid) + xid;
+	MsgPsis_d3* msgSend = (MsgPsis_d3*)(msgSendBuffer.ptr + msgSendBuffer.slicePitch * dataZid + msgSendBuffer.pitch * yid) + xid;
+	MsgPsis_d3* msgReceive = (MsgPsis_d3*)(msgReceiveBuffer.ptr + msgReceiveBuffer.slicePitch * dataZid + msgReceiveBuffer.pitch * yid) + xid;
+	BlockPots* pot = (BlockPots*)(potentials.ptr + potentials.slicePitch * dataZid + potentials.pitch * yid) + xid;
+
+	// Update psi
+	size_t dualNodeId = zid % VALUES_IN_BLOCK; // Dual node id. One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
+
+    // 4 primary faces
+	uint face = dualNodeId * FACE_COUNT;
+	double2 sum =  ((BlockPsis*)(prevPsi + ldsLapInd[face].x))->values[ldsLapInd[face++].y];
+	        sum += ((BlockPsis*)(prevPsi + ldsLapInd[face].x))->values[ldsLapInd[face++].y];
+	        sum += ((BlockPsis*)(prevPsi + ldsLapInd[face].x))->values[ldsLapInd[face++].y];
+	        sum += ((BlockPsis*)(prevPsi + ldsLapInd[face].x))->values[ldsLapInd[face++].y];
+
+	double2 prev = ((BlockPsis*)prevPsi)->values[dualNodeId];
+	double normsq = prev.x * prev.x + prev.y * prev.y;
+	sum = lapfacs.x * sum + (lapfacs.y + pot->values[dualNodeId] + g * normsq) * prev;
+
+	nextPsi->values[dualNodeId] += make_double2(sum.y, -sum.x);
+
+	if (dualNodeId == 0) msgSend->values[0] = nextPsi->values[dualNodeId];
+	else if (dualNodeId == 9) msgSend->values[1] = nextPsi->values[dualNodeId];
+	else if (dualNodeId == 10) msgSend->values[2] = nextPsi->values[dualNodeId];
+	else if (dualNodeId == 11) msgSend->values[3] = nextPsi->values[dualNodeId];
+};
 
 __global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr potentials, int2* lapInd, double2 lapfacs, double g, uint3 dimensions)
 {
@@ -237,17 +349,17 @@ __global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr pote
 	size_t dualNodeId = zid % VALUES_IN_BLOCK; // Dual node id. One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
 
     // 4 primary faces
-    uint face = dualNodeId * FACE_COUNT;
-	double2 sum =  (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
-	        sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
-	        sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
-	        sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
+	uint face = dualNodeId * FACE_COUNT;
+	double2 sum =  ((BlockPsis*)(prevPsi + ldsLapInd[face].x))->values[ldsLapInd[face++].y];
+	        sum += ((BlockPsis*)(prevPsi + ldsLapInd[face].x))->values[ldsLapInd[face++].y];
+	        sum += ((BlockPsis*)(prevPsi + ldsLapInd[face].x))->values[ldsLapInd[face++].y];
+	        sum += ((BlockPsis*)(prevPsi + ldsLapInd[face].x))->values[ldsLapInd[face++].y];
 
-	double2 prev = (*(BlockPsis*)prevPsi).values[dualNodeId];
+	double2 prev = ((BlockPsis*)prevPsi)->values[dualNodeId];
 	double normsq = prev.x * prev.x + prev.y * prev.y;
-	sum = lapfacs.x * sum + (lapfacs.y + (*pot).values[dualNodeId] + g * normsq) * prev;
+	sum = lapfacs.x * sum + (lapfacs.y + pot->values[dualNodeId] + g * normsq) * prev;
 
-	(*nextPsi).values[dualNodeId] += make_double2(sum.y, -sum.x);
+	nextPsi->values[dualNodeId] += make_double2(sum.y, -sum.x);
 };
 
 uint integrateInTime(const VortexState &state, const ddouble block_scale, const Vector3 &minp, const Vector3 &maxp, const ddouble iteration_period, const uint number_of_iterations)
@@ -373,6 +485,9 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	cudaExtent psiExtent_d3 = make_cudaExtent(dxsize * sizeof(BlockPsis), dysize, dzsize_d3);
 	cudaExtent potExtent_d3 = make_cudaExtent(dxsize * sizeof(BlockPots), dysize, dzsize_d3);
 
+	cudaExtent msgExtent_d0 = make_cudaExtent(dxsize * sizeof(MsgPsis_d0), dysize, 1);
+	cudaExtent msgExtent_d3 = make_cudaExtent(dxsize * sizeof(MsgPsis_d3), dysize, 1);
+
 	cudaPitchedPtr d_cudaEvenPsi_d0;
 	cudaPitchedPtr d_cudaOddPsi_d0;
 	cudaPitchedPtr d_cudaPot_d0;
@@ -389,6 +504,11 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	cudaPitchedPtr d_cudaOddPsi_d3;
 	cudaPitchedPtr d_cudaPot_d3;
 
+	cudaPitchedPtr d_cudaMsg_send_d0;
+	cudaPitchedPtr d_cudaMsg_receive_d0;
+	cudaPitchedPtr d_cudaMsg_send_d3;
+	cudaPitchedPtr d_cudaMsg_receive_d3;
+
 	int deviceOffset = (rank % 2) * 4; // Use this one on the JYU machine.
 	//int deviceOffset = 0; // Use this one on the CSC machine.
 
@@ -397,6 +517,8 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	checkCudaErrors(cudaMalloc3D(&d_cudaEvenPsi_d0, psiExtent_d0));
 	checkCudaErrors(cudaMalloc3D(&d_cudaOddPsi_d0, psiExtent_d0));
 	checkCudaErrors(cudaMalloc3D(&d_cudaPot_d0, potExtent_d0));
+	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_send_d0, msgExtent_d0));
+	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_receive_d0, msgExtent_d0));
 
 	cudaSetDevice(deviceOffset + 1);
 	cudaDeviceEnablePeerAccess(deviceOffset + 0, 0);
@@ -415,11 +537,18 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	checkCudaErrors(cudaMalloc3D(&d_cudaEvenPsi_d3, psiExtent_d3));
 	checkCudaErrors(cudaMalloc3D(&d_cudaOddPsi_d3, psiExtent_d3));
 	checkCudaErrors(cudaMalloc3D(&d_cudaPot_d3, potExtent_d3));
-	
+	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_send_d3, msgExtent_d3));
+	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_receive_d3, msgExtent_d3));
+
 	char* originalEvenPsi_d0 = (char*)d_cudaEvenPsi_d0.ptr;
 	char* originalOddPsi_d0 = (char*)d_cudaOddPsi_d0.ptr;
 	char* originalEvenPsi_d3 = (char*)d_cudaEvenPsi_d3.ptr;
 	char* originalOddPsi_d3 = (char*)d_cudaOddPsi_d3.ptr;
+
+	char* originalMsg_send_d0 = (char*)d_cudaMsg_send_d0.ptr;
+	char* originalMsg_receive_d0 = (char*)d_cudaMsg_receive_d0.ptr;
+	char* originalMsg_send_d3 = (char*)d_cudaMsg_send_d3.ptr;
+	char* originalMsg_receive_d3 = (char*)d_cudaMsg_receive_d3.ptr;
 
     // Offsets are for the zero valued padding on the edges, offset = z + y + x in bytes
 	size_t offset_d0 = d_cudaEvenPsi_d0.pitch * dysize + d_cudaEvenPsi_d0.pitch + sizeof(BlockPsis);
@@ -454,6 +583,14 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	PitchedPtr d_evenPsi_rest_d0 = d_evenPsi_d0; d_evenPsi_rest_d0.ptr += d_evenPsi_d0.slicePitch;
 	PitchedPtr d_oddPsi_rest_d0 = d_oddPsi_d0; d_oddPsi_rest_d0.ptr += d_oddPsi_d0.slicePitch;
 	PitchedPtr d_pot_rest_d0 = d_pot_d0; d_pot_rest_d0.ptr += d_pot_d3.slicePitch;
+
+	size_t msgOffset_d0 = d_cudaMsg_send_d0.pitch + sizeof(MsgPsis_d0);
+	PitchedPtr d_msg_send_d0 = {(char*)d_cudaMsg_send_d0.ptr + msgOffset_d0, d_cudaMsg_send_d0.pitch, d_cudaMsg_send_d0.pitch * dysize};
+	PitchedPtr d_msg_receive_d0 = {(char*)d_cudaMsg_receive_d0.ptr + msgOffset_d0, d_cudaMsg_receive_d0.pitch, d_cudaMsg_receive_d0.pitch * dysize};
+
+	size_t msgOffset_d3 = d_cudaMsg_send_d3.pitch + sizeof(MsgPsis_d3);
+	PitchedPtr d_msg_send_d3 = {(char*)d_cudaMsg_send_d3.ptr + msgOffset_d3, d_cudaMsg_send_d3.pitch, d_cudaMsg_send_d3.pitch * dysize};
+	PitchedPtr d_msg_receive_d3 = {(char*)d_cudaMsg_receive_d3.ptr + msgOffset_d3, d_cudaMsg_receive_d3.pitch, d_cudaMsg_receive_d3.pitch * dysize};
 
 	// find terms for laplacian
 	Buffer<int2> lapind_d0;
@@ -1052,7 +1189,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaStreamWaitEvent(stream0_d0, event_d1_to_d0, 0);
 			if (!first)
 			{
-				update<<<dimGrid_oneSlice, dimBlock, 0, stream0_d0>>>(d_oddPsi_d0, d_evenPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensions_oneSlice);
+				updateEnd_d0<<<dimGrid_oneSlice, dimBlock, 0, stream0_d0>>>(d_msg_send_d0, d_msg_receive_d0, d_oddPsi_d0, d_evenPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensions_oneSlice);
 				cudaEventRecord(event_d0_kernel, stream0_d0);
 				update<<<dimGrid_rest_d0, dimBlock, 0, stream0_d0>>>(d_oddPsi_rest_d0, d_evenPsi_rest_d0, d_pot_rest_d0, d_lapind_d0, lapfacs, g, dimensions_rest_d0);
 			}
@@ -1064,7 +1201,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaStreamWaitEvent(stream0_d3, event_d2_to_d3, 0);
 			if (!last)
 			{
-				update<<<dimGrid_oneSlice, dimBlock, 0, stream0_d3>>>(d_oddPsi_lastSlice_d3, d_evenPsi_lastSlice_d3, d_pot_lastSlice_d3, d_lapind_d3, lapfacs, g, dimensions_oneSlice);
+				updateEnd_d3<<<dimGrid_oneSlice, dimBlock, 0, stream0_d3>>>(d_msg_send_d3, d_msg_receive_d3, d_oddPsi_lastSlice_d3, d_evenPsi_lastSlice_d3, d_pot_lastSlice_d3, d_lapind_d3, lapfacs, g, dimensions_oneSlice);
 				cudaEventRecord(event_d3_kernel, stream0_d3);
 				update<<<dimGrid_rest_d3, dimBlock, 0, stream0_d3>>>(d_oddPsi_d3, d_evenPsi_d3, d_pot_d3, d_lapind_d3, lapfacs, g, dimensions_rest_d3);
 			}
@@ -1130,7 +1267,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaStreamWaitEvent(stream0_d0, event_d1_to_d0, 0);
 			if (!first)
 			{
-				update<<<dimGrid_oneSlice, dimBlock, 0, stream0_d0>>>(d_evenPsi_d0, d_oddPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensions_oneSlice);
+				updateEnd_d0<<<dimGrid_oneSlice, dimBlock, 0, stream0_d0>>>(d_msg_send_d0, d_msg_receive_d0, d_evenPsi_d0, d_oddPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensions_oneSlice);
 				cudaEventRecord(event_d0_kernel, stream0_d0);
 				update<<<dimGrid_rest_d0, dimBlock, 0, stream0_d0>>>(d_evenPsi_rest_d0, d_oddPsi_rest_d0, d_pot_rest_d0, d_lapind_d0, lapfacs, g, dimensions_rest_d0);
 			}
@@ -1142,7 +1279,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaStreamWaitEvent(stream0_d3, event_d2_to_d3, 0);
 			if (!last)
 			{
-				update<<<dimGrid_oneSlice, dimBlock, 0, stream0_d3>>>(d_evenPsi_lastSlice_d3, d_oddPsi_lastSlice_d3, d_pot_lastSlice_d3, d_lapind_d3, lapfacs, g, dimensions_oneSlice);
+				updateEnd_d3<<<dimGrid_oneSlice, dimBlock, 0, stream0_d3>>>(d_msg_send_d3, d_msg_receive_d3, d_evenPsi_lastSlice_d3, d_oddPsi_lastSlice_d3, d_pot_lastSlice_d3, d_lapind_d3, lapfacs, g, dimensions_oneSlice);
 				cudaEventRecord(event_d3_kernel, stream0_d3);
 				update<<<dimGrid_rest_d3, dimBlock, 0, stream0_d3>>>(d_evenPsi_d3, d_oddPsi_d3, d_pot_d3, d_lapind_d3, lapfacs, g, dimensions_rest_d3);
 			}
