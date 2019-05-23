@@ -389,7 +389,8 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	cudaPitchedPtr d_cudaOddPsi_d3;
 	cudaPitchedPtr d_cudaPot_d3;
 
-	int deviceOffset = (rank % 2) * 4; // TODO: Set to zero on CSC machines!!!
+	int deviceOffset = (rank % 2) * 4; // Use this one on the JYU machine.
+	//int deviceOffset = 0; // Use this one on the CSC machine.
 
 	cudaSetDevice(deviceOffset + 0);
 	cudaDeviceEnablePeerAccess(deviceOffset + 1, 0);
@@ -450,14 +451,9 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	PitchedPtr d_oddPsi_lastSlice_d3 = d_oddPsi_d3; d_oddPsi_lastSlice_d3.ptr += (dzsize_d3 - 3) * d_oddPsi_d3.slicePitch;
 	PitchedPtr d_pot_lastSlice_d3 = d_pot_d3; d_pot_lastSlice_d3.ptr += (dzsize_d3 - 3) * d_pot_d3.slicePitch;
 
-	 // TODO: Move these pointers to their correct positions
-	PitchedPtr d_evenPsi_rest_d0 = d_evenPsi_d0;
-	PitchedPtr d_oddPsi_rest_d0 = d_oddPsi_d0;
-	PitchedPtr d_pot_rest_d0 = d_pot_d0;
-
-	PitchedPtr d_evenPsi_rest_d3 = d_evenPsi_d3;
-	PitchedPtr d_oddPsi_rest_d3 = d_oddPsi_d3;
-	PitchedPtr d_pot_rest_d3 = d_pot_d3;
+	PitchedPtr d_evenPsi_rest_d0 = d_evenPsi_d0; d_evenPsi_rest_d0.ptr += d_evenPsi_d0.slicePitch;
+	PitchedPtr d_oddPsi_rest_d0 = d_oddPsi_d0; d_oddPsi_rest_d0.ptr += d_oddPsi_d0.slicePitch;
+	PitchedPtr d_pot_rest_d0 = d_pot_d0; d_pot_rest_d0.ptr += d_pot_d3.slicePitch;
 
 	// find terms for laplacian
 	Buffer<int2> lapind_d0;
@@ -722,9 +718,9 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	uint3 dimensions_d2 = make_uint3(xsize, ysize, zsize_d2);
 	uint3 dimensions_d3 = make_uint3(xsize, ysize, zsize_d3);
 	// For separating the first and last z-slices of the rank, so that they can be sent forward while the middle part kernels are still running
-	uint3 dimensionsOneSlice = make_uint3(xsize, ysize, 1);
-	uint3 dimensions_rest_d0; // TODO: Assign a correct value
-	uint3 dimensions_rest_d3; // TODO: Assign a correct value
+	uint3 dimensions_oneSlice = make_uint3(xsize, ysize, 1);
+	uint3 dimensions_rest_d0 = make_uint3(xsize, ysize, zsize_d0 - 1);
+	uint3 dimensions_rest_d3 = make_uint3(xsize, ysize, zsize_d3 - 1);
 
 	double2 lapfacs = make_double2(lapfac, lapfac0);
 	uint iter = 0;
@@ -742,11 +738,15 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 					(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
 					(zsize_d3 + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
 	// For separating the first and last z-slices of the rank, so that they can be sent forward while the middle part kernels are still running
-	dim3 dimGridOneSlice((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
+	dim3 dimGrid_oneSlice((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
 						 (ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
-						 (zsize_d0 + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
-	dim3 dimGrid_rest_d0; // TODO: Assign a correct value
-	dim3 dimGrid_rest_d3; // TODO: Assign a correct value
+						 1);
+	dim3 dimGrid_rest_d0((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
+						 (ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
+						 ((zsize_d0 - 1) + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
+	dim3 dimGrid_rest_d3((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
+						 (ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
+						 ((zsize_d3 - 1) + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
 
 	cudaExtent oneSliceExtent = make_cudaExtent(dxsize * sizeof(BlockPsis), dysize, 1);
 			
@@ -1052,7 +1052,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaStreamWaitEvent(stream0_d0, event_d1_to_d0, 0);
 			if (!first)
 			{
-				update<<<dimGridOneSlice, dimBlock, 0, stream0_d0>>>(d_oddPsi_d0, d_evenPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensionsOneSlice);
+				update<<<dimGrid_oneSlice, dimBlock, 0, stream0_d0>>>(d_oddPsi_d0, d_evenPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensions_oneSlice);
 				cudaEventRecord(event_d0_kernel, stream0_d0);
 				update<<<dimGrid_rest_d0, dimBlock, 0, stream0_d0>>>(d_oddPsi_rest_d0, d_evenPsi_rest_d0, d_pot_rest_d0, d_lapind_d0, lapfacs, g, dimensions_rest_d0);
 			}
@@ -1064,9 +1064,9 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaStreamWaitEvent(stream0_d3, event_d2_to_d3, 0);
 			if (!last)
 			{
-				update<<<dimGridOneSlice, dimBlock, 0, stream0_d3>>>(d_oddPsi_lastSlice_d3, d_evenPsi_lastSlice_d3, d_pot_lastSlice_d3, d_lapind_d3, lapfacs, g, dimensionsOneSlice);
+				update<<<dimGrid_oneSlice, dimBlock, 0, stream0_d3>>>(d_oddPsi_lastSlice_d3, d_evenPsi_lastSlice_d3, d_pot_lastSlice_d3, d_lapind_d3, lapfacs, g, dimensions_oneSlice);
 				cudaEventRecord(event_d3_kernel, stream0_d3);
-				update<<<dimGrid_rest_d3, dimBlock, 0, stream0_d3>>>(d_oddPsi_rest_d3, d_evenPsi_rest_d3, d_pot_rest_d3, d_lapind_d3, lapfacs, g, dimensions_rest_d3);
+				update<<<dimGrid_rest_d3, dimBlock, 0, stream0_d3>>>(d_oddPsi_d3, d_evenPsi_d3, d_pot_d3, d_lapind_d3, lapfacs, g, dimensions_rest_d3);
 			}
 			else
 			{
@@ -1130,7 +1130,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaStreamWaitEvent(stream0_d0, event_d1_to_d0, 0);
 			if (!first)
 			{
-				update<<<dimGridOneSlice, dimBlock, 0, stream0_d0>>>(d_evenPsi_d0, d_oddPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensionsOneSlice);
+				update<<<dimGrid_oneSlice, dimBlock, 0, stream0_d0>>>(d_evenPsi_d0, d_oddPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensions_oneSlice);
 				cudaEventRecord(event_d0_kernel, stream0_d0);
 				update<<<dimGrid_rest_d0, dimBlock, 0, stream0_d0>>>(d_evenPsi_rest_d0, d_oddPsi_rest_d0, d_pot_rest_d0, d_lapind_d0, lapfacs, g, dimensions_rest_d0);
 			}
@@ -1142,9 +1142,9 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaStreamWaitEvent(stream0_d3, event_d2_to_d3, 0);
 			if (!last)
 			{
-				update<<<dimGridOneSlice, dimBlock, 0, stream0_d3>>>(d_evenPsi_lastSlice_d3, d_oddPsi_lastSlice_d3, d_pot_lastSlice_d3, d_lapind_d3, lapfacs, g, dimensionsOneSlice);
+				update<<<dimGrid_oneSlice, dimBlock, 0, stream0_d3>>>(d_evenPsi_lastSlice_d3, d_oddPsi_lastSlice_d3, d_pot_lastSlice_d3, d_lapind_d3, lapfacs, g, dimensions_oneSlice);
 				cudaEventRecord(event_d3_kernel, stream0_d3);
-				update<<<dimGrid_rest_d3, dimBlock, 0, stream0_d3>>>(d_evenPsi_rest_d3, d_oddPsi_rest_d3, d_pot_rest_d3, d_lapind_d3, lapfacs, g, dimensions_rest_d3);
+				update<<<dimGrid_rest_d3, dimBlock, 0, stream0_d3>>>(d_evenPsi_d3, d_oddPsi_d3, d_pot_d3, d_lapind_d3, lapfacs, g, dimensions_rest_d3);
 			}
 			else
 			{
