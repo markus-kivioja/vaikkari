@@ -178,12 +178,12 @@ struct BlockPsis
 	double2 values[VALUES_IN_BLOCK]; 
 };
 
-struct MsgPsis_d0
+struct MsgPsis_d0_d3
 {
 	double2 values[2];
 };
 
-struct MsgPsis_d3
+struct MsgPsis_d3_d0
 {
 	double2 values[4];
 };
@@ -215,6 +215,9 @@ inline __host__ __device__ double2 operator*(double b, double2 a)
     return make_double2(b * a.x, b * a.y);
 }
 
+__constant__ int msgInd_d0[] = {-1, -1, 0, -1, -1, -1, 1, -1, -1, -1, -1, -1};
+__constant__ int msgInd_d3[] = {0, -1, -1, -1, -1, -1, -1, -1, -1, 1, 2, 3};
+
 __global__ void updateEnd_d0(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuffer, PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr potentials, int2* lapInd, double2 lapfacs, double g, uint3 dimensions)
 {
 	size_t xid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -241,12 +244,17 @@ __global__ void updateEnd_d0(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuff
 	// Calculate the pointers for this block
 	char* prevPsi = prevStep.ptr + prevStep.slicePitch * dataZid + prevStep.pitch * yid + sizeof(BlockPsis) * xid;
 	BlockPsis* nextPsi = (BlockPsis*)(nextStep.ptr + nextStep.slicePitch * dataZid + nextStep.pitch * yid) + xid;
-	MsgPsis_d0* msgSend = (MsgPsis_d0*)(msgSendBuffer.ptr + msgSendBuffer.slicePitch * dataZid + msgSendBuffer.pitch * yid) + xid;
-	MsgPsis_d0* msgReceive = (MsgPsis_d0*)(msgReceiveBuffer.ptr + msgReceiveBuffer.slicePitch * dataZid + msgReceiveBuffer.pitch * yid) + xid;
+	MsgPsis_d0_d3* msgSend = (MsgPsis_d0_d3*)(msgSendBuffer.ptr + msgSendBuffer.slicePitch * dataZid + msgSendBuffer.pitch * yid) + xid;
+	MsgPsis_d3_d0* msgReceive = (MsgPsis_d3_d0*)(msgReceiveBuffer.ptr + msgReceiveBuffer.slicePitch * dataZid + msgReceiveBuffer.pitch * yid) + xid;
 	BlockPots* pot = (BlockPots*)(potentials.ptr + potentials.slicePitch * dataZid + potentials.pitch * yid) + xid;
 
 	// Update psi
 	size_t dualNodeId = zid % VALUES_IN_BLOCK; // Dual node id. One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
+
+	((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[0] = msgReceive->values[0];
+	((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[9] = msgReceive->values[1];
+	((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[10] = msgReceive->values[2];
+	((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[11] = msgReceive->values[3];
 
     // 4 primary faces
 	uint face = dualNodeId * FACE_COUNT;
@@ -261,8 +269,9 @@ __global__ void updateEnd_d0(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuff
 
 	nextPsi->values[dualNodeId] += make_double2(sum.y, -sum.x);
 
-	if (dualNodeId == 2) msgSend->values[0] = nextPsi->values[dualNodeId];
-	else if (dualNodeId == 6) msgSend->values[1] = nextPsi->values[dualNodeId];
+	int msgInd = msgInd_d0[dualNodeId];
+	if (msgInd > -1)
+		msgSend->values[msgInd] = nextPsi->values[dualNodeId];
 };
 
 __global__ void updateEnd_d3(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuffer, PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr potentials, int2* lapInd, double2 lapfacs, double g, uint3 dimensions)
@@ -291,12 +300,15 @@ __global__ void updateEnd_d3(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuff
 	// Calculate the pointers for this block
 	char* prevPsi = prevStep.ptr + prevStep.slicePitch * dataZid + prevStep.pitch * yid + sizeof(BlockPsis) * xid;
 	BlockPsis* nextPsi = (BlockPsis*)(nextStep.ptr + nextStep.slicePitch * dataZid + nextStep.pitch * yid) + xid;
-	MsgPsis_d3* msgSend = (MsgPsis_d3*)(msgSendBuffer.ptr + msgSendBuffer.slicePitch * dataZid + msgSendBuffer.pitch * yid) + xid;
-	MsgPsis_d3* msgReceive = (MsgPsis_d3*)(msgReceiveBuffer.ptr + msgReceiveBuffer.slicePitch * dataZid + msgReceiveBuffer.pitch * yid) + xid;
+	MsgPsis_d3_d0* msgSend = (MsgPsis_d3_d0*)(msgSendBuffer.ptr + msgSendBuffer.slicePitch * dataZid + msgSendBuffer.pitch * yid) + xid;
+	MsgPsis_d0_d3* msgReceive = (MsgPsis_d0_d3*)(msgReceiveBuffer.ptr + msgReceiveBuffer.slicePitch * dataZid + msgReceiveBuffer.pitch * yid) + xid;
 	BlockPots* pot = (BlockPots*)(potentials.ptr + potentials.slicePitch * dataZid + potentials.pitch * yid) + xid;
 
 	// Update psi
 	size_t dualNodeId = zid % VALUES_IN_BLOCK; // Dual node id. One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
+
+	((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[2] = msgReceive->values[0];
+	((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[6] = msgReceive->values[1];
 
     // 4 primary faces
 	uint face = dualNodeId * FACE_COUNT;
@@ -311,10 +323,9 @@ __global__ void updateEnd_d3(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuff
 
 	nextPsi->values[dualNodeId] += make_double2(sum.y, -sum.x);
 
-	if (dualNodeId == 0) msgSend->values[0] = nextPsi->values[dualNodeId];
-	else if (dualNodeId == 9) msgSend->values[1] = nextPsi->values[dualNodeId];
-	else if (dualNodeId == 10) msgSend->values[2] = nextPsi->values[dualNodeId];
-	else if (dualNodeId == 11) msgSend->values[3] = nextPsi->values[dualNodeId];
+	int msgInd = msgInd_d3[dualNodeId];
+	if (msgInd > -1)
+		msgSend->values[msgInd] = nextPsi->values[dualNodeId];
 };
 
 __global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr potentials, int2* lapInd, double2 lapfacs, double g, uint3 dimensions)
@@ -485,8 +496,8 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	cudaExtent psiExtent_d3 = make_cudaExtent(dxsize * sizeof(BlockPsis), dysize, dzsize_d3);
 	cudaExtent potExtent_d3 = make_cudaExtent(dxsize * sizeof(BlockPots), dysize, dzsize_d3);
 
-	cudaExtent msgExtent_d0 = make_cudaExtent(dxsize * sizeof(MsgPsis_d0), dysize, 1);
-	cudaExtent msgExtent_d3 = make_cudaExtent(dxsize * sizeof(MsgPsis_d3), dysize, 1);
+	cudaExtent msgExtent_d0_d3 = make_cudaExtent(dxsize * sizeof(MsgPsis_d0_d3), dysize, 1);
+	cudaExtent msgExtent_d3_d0 = make_cudaExtent(dxsize * sizeof(MsgPsis_d3_d0), dysize, 1);
 
 	cudaPitchedPtr d_cudaEvenPsi_d0;
 	cudaPitchedPtr d_cudaOddPsi_d0;
@@ -517,8 +528,10 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	checkCudaErrors(cudaMalloc3D(&d_cudaEvenPsi_d0, psiExtent_d0));
 	checkCudaErrors(cudaMalloc3D(&d_cudaOddPsi_d0, psiExtent_d0));
 	checkCudaErrors(cudaMalloc3D(&d_cudaPot_d0, potExtent_d0));
-	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_send_d0, msgExtent_d0));
-	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_receive_d0, msgExtent_d0));
+	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_send_d0, msgExtent_d0_d3));
+	checkCudaErrors(cudaMemset3D(d_cudaMsg_send_d0, 1, msgExtent_d0_d3));
+	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_receive_d0, msgExtent_d3_d0));
+	checkCudaErrors(cudaMemset3D(d_cudaMsg_receive_d0, 1, msgExtent_d3_d0));
 
 	cudaSetDevice(deviceOffset + 1);
 	cudaDeviceEnablePeerAccess(deviceOffset + 0, 0);
@@ -537,13 +550,10 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	checkCudaErrors(cudaMalloc3D(&d_cudaEvenPsi_d3, psiExtent_d3));
 	checkCudaErrors(cudaMalloc3D(&d_cudaOddPsi_d3, psiExtent_d3));
 	checkCudaErrors(cudaMalloc3D(&d_cudaPot_d3, potExtent_d3));
-	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_send_d3, msgExtent_d3));
-	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_receive_d3, msgExtent_d3));
-
-	char* originalEvenPsi_d0 = (char*)d_cudaEvenPsi_d0.ptr;
-	char* originalOddPsi_d0 = (char*)d_cudaOddPsi_d0.ptr;
-	char* originalEvenPsi_d3 = (char*)d_cudaEvenPsi_d3.ptr;
-	char* originalOddPsi_d3 = (char*)d_cudaOddPsi_d3.ptr;
+	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_send_d3, msgExtent_d3_d0));
+	checkCudaErrors(cudaMemset3D(d_cudaMsg_send_d3, 1, msgExtent_d3_d0));
+	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_receive_d3, msgExtent_d0_d3));
+	checkCudaErrors(cudaMemset3D(d_cudaMsg_receive_d3, 1, msgExtent_d0_d3));
 
 	char* originalMsg_send_d0 = (char*)d_cudaMsg_send_d0.ptr;
 	char* originalMsg_receive_d0 = (char*)d_cudaMsg_receive_d0.ptr;
@@ -584,11 +594,11 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	PitchedPtr d_oddPsi_rest_d0 = d_oddPsi_d0; d_oddPsi_rest_d0.ptr += d_oddPsi_d0.slicePitch;
 	PitchedPtr d_pot_rest_d0 = d_pot_d0; d_pot_rest_d0.ptr += d_pot_d3.slicePitch;
 
-	size_t msgOffset_d0 = d_cudaMsg_send_d0.pitch + sizeof(MsgPsis_d0);
+	size_t msgOffset_d0 = d_cudaMsg_send_d0.pitch + sizeof(MsgPsis_d0_d3);
 	PitchedPtr d_msg_send_d0 = {(char*)d_cudaMsg_send_d0.ptr + msgOffset_d0, d_cudaMsg_send_d0.pitch, d_cudaMsg_send_d0.pitch * dysize};
 	PitchedPtr d_msg_receive_d0 = {(char*)d_cudaMsg_receive_d0.ptr + msgOffset_d0, d_cudaMsg_receive_d0.pitch, d_cudaMsg_receive_d0.pitch * dysize};
 
-	size_t msgOffset_d3 = d_cudaMsg_send_d3.pitch + sizeof(MsgPsis_d3);
+	size_t msgOffset_d3 = d_cudaMsg_send_d3.pitch + sizeof(MsgPsis_d3_d0);
 	PitchedPtr d_msg_send_d3 = {(char*)d_cudaMsg_send_d3.ptr + msgOffset_d3, d_cudaMsg_send_d3.pitch, d_cudaMsg_send_d3.pitch * dysize};
 	PitchedPtr d_msg_receive_d3 = {(char*)d_cudaMsg_receive_d3.ptr + msgOffset_d3, d_cudaMsg_receive_d3.pitch, d_cudaMsg_receive_d3.pitch * dysize};
 
@@ -1242,16 +1252,16 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			if (!first)
 			{
 				cudaSetDevice(deviceOffset + 0);
-				MPI_Irecv(((char*)originalOddPsi_d0) + 0 * d_oddPsi_d0.slicePitch, d_oddPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_RECEIVE_REQUEST]);
+				MPI_Irecv(originalMsg_receive_d0, d_msg_receive_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_RECEIVE_REQUEST]);
 				cudaEventSynchronize(event_d0_kernel);
-				MPI_Isend(((char*)originalOddPsi_d0) + 1 * d_oddPsi_d0.slicePitch, d_oddPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_SEND_REQUEST]);
+				MPI_Isend(originalMsg_send_d0, d_msg_send_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_SEND_REQUEST]);
 			}
 			if (!last)
 			{
 				cudaSetDevice(deviceOffset + 3);
-				MPI_Irecv(((char*)originalOddPsi_d3) + (dzsize_d3 - 1) * d_oddPsi_d3.slicePitch, d_oddPsi_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_RECEIVE_REQUEST]);
+				MPI_Irecv(originalMsg_receive_d3, d_msg_receive_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_RECEIVE_REQUEST]);
 				cudaEventSynchronize(event_d3_kernel);
-				MPI_Isend(((char*)originalOddPsi_d3) + (dzsize_d3 - 2) * d_oddPsi_d3.slicePitch, d_oddPsi_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_SEND_REQUEST]);
+				MPI_Isend(originalMsg_send_d3, d_msg_send_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_SEND_REQUEST]);
 			}
 			if (!first)
 			{
@@ -1320,16 +1330,16 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			if (!first)
 			{
 				cudaSetDevice(deviceOffset + 0);
-				MPI_Irecv(((char*)originalEvenPsi_d0) + 0 * d_evenPsi_d0.slicePitch, d_evenPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_RECEIVE_REQUEST]);
+				MPI_Irecv(originalMsg_receive_d0, d_msg_receive_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_RECEIVE_REQUEST]);
 				cudaEventSynchronize(event_d0_kernel);
-				MPI_Isend(((char*)originalEvenPsi_d0) + 1 * d_evenPsi_d0.slicePitch, d_evenPsi_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_SEND_REQUEST]);
+				MPI_Isend(originalMsg_send_d0, d_msg_send_d0.slicePitch, MPI_CHAR, rank - 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_SEND_REQUEST]);
 			}
 			if (!last)
 			{
 				cudaSetDevice(deviceOffset + 3);
-				MPI_Irecv(((char*)originalEvenPsi_d3) + (dzsize_d3 - 1) * d_evenPsi_d3.slicePitch, d_evenPsi_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_RECEIVE_REQUEST]);
+				MPI_Irecv(originalMsg_receive_d3, d_msg_receive_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_BACKWARD, MPI_COMM_WORLD, &requests[BACKWARD_RECEIVE_REQUEST]);
 				cudaEventSynchronize(event_d3_kernel);
-				MPI_Isend(((char*)originalEvenPsi_d3) + (dzsize_d3 - 2) * d_evenPsi_d3.slicePitch, d_evenPsi_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_SEND_REQUEST]);
+				MPI_Isend(originalMsg_send_d3, d_msg_send_d3.slicePitch, MPI_CHAR, rank + 1, MPI_TAG_FORWARD, MPI_COMM_WORLD, &requests[FORWARD_SEND_REQUEST]);
 			}
 			if (!first)
 			{
