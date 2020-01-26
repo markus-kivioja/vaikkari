@@ -98,76 +98,76 @@ void getPositions(Buffer<Vector3> &pos)
 ddouble getLaplacian(Buffer<int2> &ind, const int nx, const int ny, const int nz) // nx, ny, nz in bytes
 {
 	ind.resize(INDICES_PER_BLOCK);
-    // Primary faces of the 1. dual node
+    // Primary faces of the 0. dual node
 	ind[0] = make_int2(0, 9);
 	ind[1] = make_int2(0, 10);
-	ind[2] = make_int2(nz - nx, 2); // Needed to be sent from d0
+	ind[2] = make_int2(nz - nx, 2); // Needs to be sent from d0
 	ind[3] = make_int2(-nx, 3);
 
-    // Primary faces of the 2. dual node
+    // Primary faces of the 1. dual node
 	ind[4] = make_int2(0, 2);
 	ind[5] = make_int2(0, 3);
 	ind[6] = make_int2(nx - ny, 5);
 	ind[7] = make_int2(-ny, 8);
 
-    // Primary faces of the 3. dual node
+    // Primary faces of the 2. dual node
 	ind[8] = make_int2(0, 1);
 	ind[9] = make_int2(0, 4);
-	ind[10] = make_int2(-nz + nx, 0); // Needed to be sent from d3
-	ind[11] = make_int2(-nz, 11); // Needed to be sent from d3
+	ind[10] = make_int2(-nz + nx, 0); // Needs to be sent from d3
+	ind[11] = make_int2(-nz, 11); // Needs to be sent from d3
 
-	// Primary faces of the 4. dual node
+	// Primary faces of the 3. dual node
     ind[12] = make_int2(0, 1);
 	ind[13] = make_int2(0, 4);
 	ind[14] = make_int2(nx, 0);
 	ind[15] = make_int2(0, 11);
 
-    // Primary faces of the 5. dual node
+    // Primary faces of the 4. dual node
 	ind[16] = make_int2(0, 2);
 	ind[17] = make_int2(0, 3);
 	ind[18] = make_int2(nx, 5);
 	ind[19] = make_int2(0, 8);
 
-    // Primary faces of the 6. dual node
+    // Primary faces of the 5. dual node
 	ind[20] = make_int2(0, 6);
 	ind[21] = make_int2(0, 7);
 	ind[22] = make_int2(-nx + ny, 1);
 	ind[23] = make_int2(-nx, 4);
 
-    // Primary faces of the 7. dual node
+    // Primary faces of the 6. dual node
 	ind[24] = make_int2(0, 5);
 	ind[25] = make_int2(0, 8);
-	ind[26] = make_int2(-nz + ny, 9); // Needed to be sent from d3
-	ind[27] = make_int2(-nz, 10); // Needed to be sent from d3
+	ind[26] = make_int2(-nz + ny, 9); // Needs to be sent from d3
+	ind[27] = make_int2(-nz, 10); // Needs to be sent from d3
 
-    // Primary faces of the 8. dual node
+    // Primary faces of the 7. dual node
 	ind[28] = make_int2(0, 5);
 	ind[29] = make_int2(0, 8);
 	ind[30] = make_int2(ny, 9);
 	ind[31] = make_int2(0, 10);
 
-    // Primary faces of the 9. dual node
+    // Primary faces of the 8. dual node
 	ind[32] = make_int2(0, 6);
 	ind[33] = make_int2(0, 7);
 	ind[34] = make_int2(ny, 1);
 	ind[35] = make_int2(0, 4);
 
-    // Primary faces of the 10. dual node
+    // Primary faces of the 9. dual node
 	ind[36] = make_int2(0, 0);
 	ind[37] = make_int2(0, 11);
-	ind[38] = make_int2(nz - ny, 6); // Needed to be sent from d0
+	ind[38] = make_int2(nz - ny, 6); // Needs to be sent from d0
 	ind[39] = make_int2(-ny, 7);
 
-    // Primary faces of the 11. dual node
+    // Primary faces of the 10. dual node
 	ind[40] = make_int2(0, 0);
 	ind[41] = make_int2(0, 11);
-	ind[42] = make_int2(nz, 6); // Needed to be sent from d0
+	ind[42] = make_int2(nz, 6); // Needs to be sent from d0
 	ind[43] = make_int2(0, 7);
 
-    // Primary faces of the 12. dual node
+    // Primary faces of the 11. dual node
 	ind[44] = make_int2(0, 9);
 	ind[45] = make_int2(0, 10);
-	ind[46] = make_int2(nz, 2); // Needed to be sent from d0
+	ind[46] = make_int2(nz, 2); // Needs to be sent from d0
 	ind[47] = make_int2(0, 3);
 
 	return 1.5;
@@ -251,10 +251,16 @@ __global__ void updateEnd_d0(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuff
 	// Update psi
 	size_t dualNodeId = zid % VALUES_IN_BLOCK; // Dual node id. One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
 
-	((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[0] = msgReceive->values[0];
-	((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[9] = msgReceive->values[1];
-	((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[10] = msgReceive->values[2];
-	((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[11] = msgReceive->values[3];
+    if (dualNodeId == 2)
+    {
+	    ((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[0] = msgReceive->values[0];
+	    ((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[11] = msgReceive->values[3];
+    }
+    else if (dualNodeId == 6)
+    {
+	    ((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[9] = msgReceive->values[1];
+	    ((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[10] = msgReceive->values[2];
+    }
 
     // 4 primary faces
 	uint face = dualNodeId * FACE_COUNT;
@@ -307,8 +313,14 @@ __global__ void updateEnd_d3(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuff
 	// Update psi
 	size_t dualNodeId = zid % VALUES_IN_BLOCK; // Dual node id. One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
 
-	((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[2] = msgReceive->values[0];
-	((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[6] = msgReceive->values[1];
+    if (dualNodeId == 0 || dualNodeId == 11)
+    {
+	    ((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[2] = msgReceive->values[0];
+    }
+    if (dualNodeId == 9 || dualNodeId == 10)
+    {
+	    ((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[6] = msgReceive->values[1];
+    }
 
     // 4 primary faces
 	uint face = dualNodeId * FACE_COUNT;
