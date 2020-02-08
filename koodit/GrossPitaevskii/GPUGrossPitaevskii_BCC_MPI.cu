@@ -178,12 +178,12 @@ struct BlockPsis
 	double2 values[VALUES_IN_BLOCK]; 
 };
 
-struct MsgPsis_d0_d3
+struct MsgPsis_d0_d3 // The first device in the name is the sender
 {
 	double2 values[2];
 };
 
-struct MsgPsis_d3_d0
+struct MsgPsis_d3_d0 // The first device in the name is the sender
 {
 	double2 values[4];
 };
@@ -317,7 +317,7 @@ __global__ void updateEnd_d3(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuff
     {
 	    ((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[2] = msgReceive->values[0];
     }
-    if (dualNodeId == 9 || dualNodeId == 10)
+    else if (dualNodeId == 9 || dualNodeId == 10)
     {
 	    ((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[6] = msgReceive->values[1];
     }
@@ -541,9 +541,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	checkCudaErrors(cudaMalloc3D(&d_cudaOddPsi_d0, psiExtent_d0));
 	checkCudaErrors(cudaMalloc3D(&d_cudaPot_d0, potExtent_d0));
 	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_send_d0, msgExtent_d0_d3));
-	checkCudaErrors(cudaMemset3D(d_cudaMsg_send_d0, 1, msgExtent_d0_d3));
 	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_receive_d0, msgExtent_d3_d0));
-	checkCudaErrors(cudaMemset3D(d_cudaMsg_receive_d0, 1, msgExtent_d3_d0));
 
 	cudaSetDevice(deviceOffset + 1);
 	cudaDeviceEnablePeerAccess(deviceOffset + 0, 0);
@@ -563,10 +561,9 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	checkCudaErrors(cudaMalloc3D(&d_cudaOddPsi_d3, psiExtent_d3));
 	checkCudaErrors(cudaMalloc3D(&d_cudaPot_d3, potExtent_d3));
 	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_send_d3, msgExtent_d3_d0));
-	checkCudaErrors(cudaMemset3D(d_cudaMsg_send_d3, 1, msgExtent_d3_d0));
 	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_receive_d3, msgExtent_d0_d3));
-	checkCudaErrors(cudaMemset3D(d_cudaMsg_receive_d3, 1, msgExtent_d0_d3));
 
+    // Pointers that include the zero valued padding, because we need to MPI send the whole slice with the padding included
 	char* originalMsg_send_d0 = (char*)d_cudaMsg_send_d0.ptr;
 	char* originalMsg_receive_d0 = (char*)d_cudaMsg_receive_d0.ptr;
 	char* originalMsg_send_d3 = (char*)d_cudaMsg_send_d3.ptr;
@@ -606,13 +603,14 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	PitchedPtr d_oddPsi_rest_d0 = d_oddPsi_d0; d_oddPsi_rest_d0.ptr += d_oddPsi_d0.slicePitch;
 	PitchedPtr d_pot_rest_d0 = d_pot_d0; d_pot_rest_d0.ptr += d_pot_d3.slicePitch;
 
-	size_t msgOffset_d0 = d_cudaMsg_send_d0.pitch + sizeof(MsgPsis_d0_d3);
-	PitchedPtr d_msg_send_d0 = {(char*)d_cudaMsg_send_d0.ptr + msgOffset_d0, d_cudaMsg_send_d0.pitch, d_cudaMsg_send_d0.pitch * dysize};
-	PitchedPtr d_msg_receive_d0 = {(char*)d_cudaMsg_receive_d0.ptr + msgOffset_d0, d_cudaMsg_receive_d0.pitch, d_cudaMsg_receive_d0.pitch * dysize};
+	size_t msgOffset_d0 = d_cudaMsg_send_d0.pitch + sizeof(MsgPsis_d0_d3); // Just y + x
+    size_t msgOffset_d3 = d_cudaMsg_send_d3.pitch + sizeof(MsgPsis_d3_d0); // Just y + x
 
-	size_t msgOffset_d3 = d_cudaMsg_send_d3.pitch + sizeof(MsgPsis_d3_d0);
+	PitchedPtr d_msg_send_d0 = {(char*)d_cudaMsg_send_d0.ptr + msgOffset_d0, d_cudaMsg_send_d0.pitch, d_cudaMsg_send_d0.pitch * dysize};
+	PitchedPtr d_msg_receive_d0 = {(char*)d_cudaMsg_receive_d0.ptr + msgOffset_d3, d_cudaMsg_receive_d0.pitch, d_cudaMsg_receive_d0.pitch * dysize};
+
 	PitchedPtr d_msg_send_d3 = {(char*)d_cudaMsg_send_d3.ptr + msgOffset_d3, d_cudaMsg_send_d3.pitch, d_cudaMsg_send_d3.pitch * dysize};
-	PitchedPtr d_msg_receive_d3 = {(char*)d_cudaMsg_receive_d3.ptr + msgOffset_d3, d_cudaMsg_receive_d3.pitch, d_cudaMsg_receive_d3.pitch * dysize};
+	PitchedPtr d_msg_receive_d3 = {(char*)d_cudaMsg_receive_d3.ptr + msgOffset_d0, d_cudaMsg_receive_d3.pitch, d_cudaMsg_receive_d3.pitch * dysize};
 
 	// find terms for laplacian
 	Buffer<int2> lapind_d0;
@@ -663,14 +661,20 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
     // Initialize host memory
 	size_t hostSize = dxsize * dysize * (zsize + 2);
 	BlockPsis* h_evenPsi;
-	BlockPsis* h_oddPsi;
+    BlockPsis* h_oddPsi;
 	BlockPots* h_pot;
+    MsgPsis_d0_d3* h_msg_d0_d3;
+    MsgPsis_d3_d0* h_msg_d3_d0;
 	checkCudaErrors(cudaMallocHost(&h_evenPsi, hostSize * sizeof(BlockPsis)));
 	checkCudaErrors(cudaMallocHost(&h_oddPsi, hostSize * sizeof(BlockPsis)));
 	checkCudaErrors(cudaMallocHost(&h_pot, hostSize * sizeof(BlockPots)));
+    checkCudaErrors(cudaMallocHost(&h_msg_d0_d3, hostSize * sizeof(MsgPsis_d0_d3)));
+    checkCudaErrors(cudaMallocHost(&h_msg_d3_d0, hostSize * sizeof(MsgPsis_d3_d0)));
 	memset(h_evenPsi, 0, hostSize * sizeof(BlockPsis));
 	memset(h_oddPsi, 0, hostSize * sizeof(BlockPsis));
 	memset(h_pot, 0, hostSize * sizeof(BlockPots));
+    memset(h_msg_d0_d3, 0, hostSize * sizeof(MsgPsis_d0_d3));
+    memset(h_msg_d3_d0, 0, hostSize * sizeof(MsgPsis_d3_d0));
 
 	// initialize discrete field
 	if (!first)
@@ -683,13 +687,13 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	}
 	const Complex oddPhase = state.getPhase(-0.5 * time_step_size);
 	Random rnd(54363);
-	for(k=0; k<zsize + 2; k++)
+	for (k = 0; k < zsize + 2; k++)
 	{
-		for(j=0; j<ysize; j++)
+		for (j = 0; j < ysize; j++)
 		{
-			for(i=0; i<xsize; i++)
+			for (i = 0; i < xsize; i++)
 			{
-				for(l=0; l<bsize; l++)
+				for (l = 0; l < bsize; l++)
 				{		
 					const uint srcI = k * bxysize + j * bxsize + i * bsize + l;
 					const uint dstI = k * dxsize*dysize + (j+1) * dxsize + (i+1);
@@ -701,6 +705,13 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 					h_oddPsi[dstI].values[l] = make_double2(oddPhase.r * even.x - oddPhase.i * even.y,
 															oddPhase.i * even.x + oddPhase.r * even.y);
 					h_pot[dstI].values[l] = pot[srcI];
+
+                    if (l == 2) h_msg_d0_d3[dstI].values[0] = even;
+                    else if (l == 6) h_msg_d0_d3[dstI].values[1] = even;
+                    else if (l == 0) h_msg_d3_d0[dstI].values[0] = even;
+                    else if (l == 9) h_msg_d3_d0[dstI].values[1] = even;
+                    else if (l == 10) h_msg_d3_d0[dstI].values[2] = even;
+                    else if (l == 11) h_msg_d3_d0[dstI].values[3] = even;
 				}
 			}
 		}
@@ -718,6 +729,9 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	cudaPitchedPtr h_cudaEvenPsi_d3 = {0};
 	cudaPitchedPtr h_cudaOddPsi_d3 = {0};
 	cudaPitchedPtr h_cudaPot_d3 = {0};
+
+	cudaPitchedPtr h_cudaMsg_d0_d3 = {0};
+	cudaPitchedPtr h_cudaMsg_d3_d0 = {0};
 
 	h_cudaEvenPsi_d0.ptr = h_evenPsi;
 	h_cudaEvenPsi_d0.pitch = dxsize * sizeof(BlockPsis);
@@ -770,6 +784,15 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	h_cudaPot_d3.xsize = d_cudaPot_d3.xsize;
 	h_cudaPot_d3.ysize = d_cudaPot_d3.ysize;
 
+	h_cudaMsg_d0_d3.ptr = h_msg_d0_d3 + dxsize * dysize * (zsize + 1); // To initialize d3 receive message
+    h_cudaMsg_d0_d3.pitch = dxsize * sizeof(MsgPsis_d0_d3);
+    h_cudaMsg_d0_d3.xsize = d_cudaMsg_send_d0.xsize;
+    h_cudaMsg_d0_d3.ysize = d_cudaMsg_send_d0.ysize;
+	h_cudaMsg_d3_d0.ptr = h_msg_d3_d0;
+    h_cudaMsg_d3_d0.pitch = dxsize * sizeof(MsgPsis_d3_d0);  // To initialize d0 receive message
+    h_cudaMsg_d3_d0.xsize = d_cudaMsg_send_d3.xsize;
+    h_cudaMsg_d3_d0.ysize = d_cudaMsg_send_d3.ysize;
+
 	// Copy from host memory to device memory
 	cudaMemcpy3DParms evenPsiParams_d0 = {0};
 	cudaMemcpy3DParms oddPsiParams_d0 = {0};
@@ -783,6 +806,9 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	cudaMemcpy3DParms evenPsiParams_d3 = {0};
 	cudaMemcpy3DParms oddPsiParams_d3 = {0};
 	cudaMemcpy3DParms potParams_d3 = {0};
+
+    cudaMemcpy3DParms msgParams_d0 = {0};
+    cudaMemcpy3DParms msgParams_d3 = {0};
 
 	evenPsiParams_d0.srcPtr = h_cudaEvenPsi_d0;
 	evenPsiParams_d0.dstPtr = d_cudaEvenPsi_d0;
@@ -835,10 +861,21 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	potParams_d3.extent = potExtent_d3;
 	potParams_d3.kind = cudaMemcpyHostToDevice;
 
+    msgParams_d0.srcPtr = h_cudaMsg_d3_d0;
+    msgParams_d0.dstPtr = d_cudaMsg_receive_d0;
+    msgParams_d0.extent = msgExtent_d3_d0;
+    msgParams_d0.kind = cudaMemcpyHostToDevice;
+
+    msgParams_d3.srcPtr = h_cudaMsg_d0_d3;
+    msgParams_d3.dstPtr = d_cudaMsg_receive_d3;
+    msgParams_d3.extent = msgExtent_d0_d3;
+    msgParams_d3.kind = cudaMemcpyHostToDevice;
+
 	cudaSetDevice(deviceOffset + 0);
 	checkCudaErrors(cudaMemcpy3DAsync(&evenPsiParams_d0));
 	checkCudaErrors(cudaMemcpy3DAsync(&oddPsiParams_d0));
 	checkCudaErrors(cudaMemcpy3DAsync(&potParams_d0));
+    checkCudaErrors(cudaMemcpy3DAsync(&msgParams_d0));
 	checkCudaErrors(cudaMemcpyAsync(d_lapind_d0, &lapind_d0[0], lapind_d0.size() * sizeof(int2), cudaMemcpyHostToDevice));
 
 	cudaSetDevice(deviceOffset + 1);
@@ -857,6 +894,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	checkCudaErrors(cudaMemcpy3DAsync(&evenPsiParams_d3));
 	checkCudaErrors(cudaMemcpy3DAsync(&oddPsiParams_d3));
 	checkCudaErrors(cudaMemcpy3DAsync(&potParams_d3));
+    checkCudaErrors(cudaMemcpy3DAsync(&msgParams_d3));
 	checkCudaErrors(cudaMemcpyAsync(d_lapind_d3, &lapind_d3[0], lapind_d3.size() * sizeof(int2), cudaMemcpyHostToDevice));
 	
 	// Clear host memory after data has been copied to devices
