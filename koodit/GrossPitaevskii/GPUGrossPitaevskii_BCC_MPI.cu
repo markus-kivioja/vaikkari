@@ -244,8 +244,8 @@ __global__ void updateEnd_d0(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuff
 	// Calculate the pointers for this block
 	char* prevPsi = prevStep.ptr + prevStep.slicePitch * dataZid + prevStep.pitch * yid + sizeof(BlockPsis) * xid;
 	BlockPsis* nextPsi = (BlockPsis*)(nextStep.ptr + nextStep.slicePitch * dataZid + nextStep.pitch * yid) + xid;
-	MsgPsis_d0_d3* msgSend = (MsgPsis_d0_d3*)(msgSendBuffer.ptr + msgSendBuffer.slicePitch * dataZid + msgSendBuffer.pitch * yid) + xid;
-	MsgPsis_d3_d0* msgReceive = (MsgPsis_d3_d0*)(msgReceiveBuffer.ptr + msgReceiveBuffer.slicePitch * dataZid + msgReceiveBuffer.pitch * yid) + xid;
+	MsgPsis_d0_d3* msgSend = (MsgPsis_d0_d3*)(msgSendBuffer.ptr + msgSendBuffer.slicePitch * dataZid + msgSendBuffer.pitch * yid) + xid; // TODO: THE BUG IS POSSIBLY HERE !!!!
+	MsgPsis_d3_d0* msgReceive = (MsgPsis_d3_d0*)(msgReceiveBuffer.ptr + msgReceiveBuffer.slicePitch * dataZid + msgReceiveBuffer.pitch * yid) + xid; // TODO: THE BUG IS POSSIBLY HERE !!!!
 	BlockPots* pot = (BlockPots*)(potentials.ptr + potentials.slicePitch * dataZid + potentials.pitch * yid) + xid;
 
 	// Update psi
@@ -306,8 +306,8 @@ __global__ void updateEnd_d3(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuff
 	// Calculate the pointers for this block
 	char* prevPsi = prevStep.ptr + prevStep.slicePitch * dataZid + prevStep.pitch * yid + sizeof(BlockPsis) * xid;
 	BlockPsis* nextPsi = (BlockPsis*)(nextStep.ptr + nextStep.slicePitch * dataZid + nextStep.pitch * yid) + xid;
-	MsgPsis_d3_d0* msgSend = (MsgPsis_d3_d0*)(msgSendBuffer.ptr + msgSendBuffer.slicePitch * dataZid + msgSendBuffer.pitch * yid) + xid;
-	MsgPsis_d0_d3* msgReceive = (MsgPsis_d0_d3*)(msgReceiveBuffer.ptr + msgReceiveBuffer.slicePitch * dataZid + msgReceiveBuffer.pitch * yid) + xid;
+	MsgPsis_d3_d0* msgSend = (MsgPsis_d3_d0*)(msgSendBuffer.ptr + msgSendBuffer.slicePitch * dataZid + msgSendBuffer.pitch * yid) + xid; // TODO: THE BUG IS POSSIBLY HERE !!!!
+	MsgPsis_d0_d3* msgReceive = (MsgPsis_d0_d3*)(msgReceiveBuffer.ptr + msgReceiveBuffer.slicePitch * dataZid + msgReceiveBuffer.pitch * yid) + xid; // TODO: THE BUG IS POSSIBLY HERE !!!!
 	BlockPots* pot = (BlockPots*)(potentials.ptr + potentials.slicePitch * dataZid + potentials.pitch * yid) + xid;
 
 	// Update psi
