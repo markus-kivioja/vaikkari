@@ -315,11 +315,11 @@ __global__ void updateEnd_d3(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuff
 
     if (dualNodeId == 0 || dualNodeId == 11)
     {
-	    ((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[2] = msgReceive->values[0];
+	    ((BlockPsis*)(prevPsi + prevStep.slicePitch))->values[2] = msgReceive->values[0];
     }
     else if (dualNodeId == 9 || dualNodeId == 10)
     {
-	    ((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[6] = msgReceive->values[1];
+	    ((BlockPsis*)(prevPsi + prevStep.slicePitch))->values[6] = msgReceive->values[1];
     }
 
     // 4 primary faces
