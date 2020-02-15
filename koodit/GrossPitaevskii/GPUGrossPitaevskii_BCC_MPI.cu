@@ -244,8 +244,8 @@ __global__ void updateEnd_d0(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuff
 	// Calculate the pointers for this block
 	char* prevPsi = prevStep.ptr + prevStep.slicePitch * dataZid + prevStep.pitch * yid + sizeof(BlockPsis) * xid;
 	BlockPsis* nextPsi = (BlockPsis*)(nextStep.ptr + nextStep.slicePitch * dataZid + nextStep.pitch * yid) + xid;
-	MsgPsis_d0_d3* msgSend = (MsgPsis_d0_d3*)(msgSendBuffer.ptr + msgSendBuffer.slicePitch * dataZid + msgSendBuffer.pitch * yid) + xid; // TODO: THE BUG IS POSSIBLY HERE !!!!
-	MsgPsis_d3_d0* msgReceive = (MsgPsis_d3_d0*)(msgReceiveBuffer.ptr + msgReceiveBuffer.slicePitch * dataZid + msgReceiveBuffer.pitch * yid) + xid; // TODO: THE BUG IS POSSIBLY HERE !!!!
+	MsgPsis_d0_d3* msgSend = (MsgPsis_d0_d3*)(msgSendBuffer.ptr + msgSendBuffer.pitch * yid) + xid;
+	MsgPsis_d3_d0* msgReceive = (MsgPsis_d3_d0*)(msgReceiveBuffer.ptr + msgReceiveBuffer.pitch * yid) + xid;
 	BlockPots* pot = (BlockPots*)(potentials.ptr + potentials.slicePitch * dataZid + potentials.pitch * yid) + xid;
 
 	// Update psi
@@ -306,8 +306,8 @@ __global__ void updateEnd_d3(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuff
 	// Calculate the pointers for this block
 	char* prevPsi = prevStep.ptr + prevStep.slicePitch * dataZid + prevStep.pitch * yid + sizeof(BlockPsis) * xid;
 	BlockPsis* nextPsi = (BlockPsis*)(nextStep.ptr + nextStep.slicePitch * dataZid + nextStep.pitch * yid) + xid;
-	MsgPsis_d3_d0* msgSend = (MsgPsis_d3_d0*)(msgSendBuffer.ptr + msgSendBuffer.slicePitch * dataZid + msgSendBuffer.pitch * yid) + xid; // TODO: THE BUG IS POSSIBLY HERE !!!!
-	MsgPsis_d0_d3* msgReceive = (MsgPsis_d0_d3*)(msgReceiveBuffer.ptr + msgReceiveBuffer.slicePitch * dataZid + msgReceiveBuffer.pitch * yid) + xid; // TODO: THE BUG IS POSSIBLY HERE !!!!
+	MsgPsis_d3_d0* msgSend = (MsgPsis_d3_d0*)(msgSendBuffer.ptr + msgSendBuffer.pitch * yid) + xid;
+	MsgPsis_d0_d3* msgReceive = (MsgPsis_d0_d3*)(msgReceiveBuffer.ptr + msgReceiveBuffer.pitch * yid) + xid;
 	BlockPots* pot = (BlockPots*)(potentials.ptr + potentials.slicePitch * dataZid + potentials.pitch * yid) + xid;
 
 	// Update psi
@@ -541,6 +541,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	checkCudaErrors(cudaMalloc3D(&d_cudaOddPsi_d0, psiExtent_d0));
 	checkCudaErrors(cudaMalloc3D(&d_cudaPot_d0, potExtent_d0));
 	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_send_d0, msgExtent_d0_d3));
+	checkCudaErrors(cudaMemset3D(d_cudaMsg_send_d0, 0, msgExtent_d0_d3));
 	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_receive_d0, msgExtent_d3_d0));
 
 	cudaSetDevice(deviceOffset + 1);
@@ -561,6 +562,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	checkCudaErrors(cudaMalloc3D(&d_cudaOddPsi_d3, psiExtent_d3));
 	checkCudaErrors(cudaMalloc3D(&d_cudaPot_d3, potExtent_d3));
 	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_send_d3, msgExtent_d3_d0));
+	checkCudaErrors(cudaMemset3D(d_cudaMsg_send_d3, 0, msgExtent_d3_d0));
 	checkCudaErrors(cudaMalloc3D(&d_cudaMsg_receive_d3, msgExtent_d0_d3));
 
     // Pointers that include the zero valued padding, because we need to MPI send the whole slice with the padding included
@@ -603,14 +605,16 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	PitchedPtr d_oddPsi_rest_d0 = d_oddPsi_d0; d_oddPsi_rest_d0.ptr += d_oddPsi_d0.slicePitch;
 	PitchedPtr d_pot_rest_d0 = d_pot_d0; d_pot_rest_d0.ptr += d_pot_d3.slicePitch;
 
-	size_t msgOffset_d0 = d_cudaMsg_send_d0.pitch + sizeof(MsgPsis_d0_d3); // Just y + x
-    size_t msgOffset_d3 = d_cudaMsg_send_d3.pitch + sizeof(MsgPsis_d3_d0); // Just y + x
+	size_t msgOffset_send_d0 = d_cudaMsg_send_d0.pitch + sizeof(MsgPsis_d0_d3); // Just y + x
+	size_t msgOffset_receive_d0 = d_cudaMsg_receive_d0.pitch + sizeof(MsgPsis_d3_d0); // Just y + x
+    size_t msgOffset_send_d3 = d_cudaMsg_send_d3.pitch + sizeof(MsgPsis_d3_d0); // Just y + x
+    size_t msgOffset_receive_d3 = d_cudaMsg_receive_d3.pitch + sizeof(MsgPsis_d0_d3); // Just y + x
 
-	PitchedPtr d_msg_send_d0 = {(char*)d_cudaMsg_send_d0.ptr + msgOffset_d0, d_cudaMsg_send_d0.pitch, d_cudaMsg_send_d0.pitch * dysize};
-	PitchedPtr d_msg_receive_d0 = {(char*)d_cudaMsg_receive_d0.ptr + msgOffset_d3, d_cudaMsg_receive_d0.pitch, d_cudaMsg_receive_d0.pitch * dysize};
+	PitchedPtr d_msg_send_d0 = {(char*)d_cudaMsg_send_d0.ptr + msgOffset_send_d0, d_cudaMsg_send_d0.pitch, d_cudaMsg_send_d0.pitch * dysize};
+	PitchedPtr d_msg_receive_d0 = {(char*)d_cudaMsg_receive_d0.ptr + msgOffset_receive_d0, d_cudaMsg_receive_d0.pitch, d_cudaMsg_receive_d0.pitch * dysize};
 
-	PitchedPtr d_msg_send_d3 = {(char*)d_cudaMsg_send_d3.ptr + msgOffset_d3, d_cudaMsg_send_d3.pitch, d_cudaMsg_send_d3.pitch * dysize};
-	PitchedPtr d_msg_receive_d3 = {(char*)d_cudaMsg_receive_d3.ptr + msgOffset_d0, d_cudaMsg_receive_d3.pitch, d_cudaMsg_receive_d3.pitch * dysize};
+	PitchedPtr d_msg_send_d3 = {(char*)d_cudaMsg_send_d3.ptr + msgOffset_send_d3, d_cudaMsg_send_d3.pitch, d_cudaMsg_send_d3.pitch * dysize};
+	PitchedPtr d_msg_receive_d3 = {(char*)d_cudaMsg_receive_d3.ptr + msgOffset_receive_d3, d_cudaMsg_receive_d3.pitch, d_cudaMsg_receive_d3.pitch * dysize};
 
 	// find terms for laplacian
 	Buffer<int2> lapind_d0;
@@ -788,8 +792,8 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
     h_cudaMsg_d0_d3.pitch = dxsize * sizeof(MsgPsis_d0_d3);
     h_cudaMsg_d0_d3.xsize = d_cudaMsg_send_d0.xsize;
     h_cudaMsg_d0_d3.ysize = d_cudaMsg_send_d0.ysize;
-	h_cudaMsg_d3_d0.ptr = h_msg_d3_d0;
-    h_cudaMsg_d3_d0.pitch = dxsize * sizeof(MsgPsis_d3_d0);  // To initialize d0 receive message
+	h_cudaMsg_d3_d0.ptr = h_msg_d3_d0; // To initialize d0 receive message
+    h_cudaMsg_d3_d0.pitch = dxsize * sizeof(MsgPsis_d3_d0);
     h_cudaMsg_d3_d0.xsize = d_cudaMsg_send_d3.xsize;
     h_cudaMsg_d3_d0.ysize = d_cudaMsg_send_d3.ysize;
 
