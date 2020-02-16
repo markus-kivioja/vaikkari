@@ -26,6 +26,8 @@ ddouble G = 5000;
 #define THREAD_BLOCK_Z 1
 #define FACE_COUNT 4
 #define VALUES_IN_BLOCK 12
+#define MSG_VALUES_IN_BLOCK_D0 4
+#define MSG_VALUES_IN_BLOCK_D3 2
 #define INDICES_PER_BLOCK 48
 
 #define MPI_TAG_FORWARD 0
@@ -218,7 +220,57 @@ inline __host__ __device__ double2 operator*(double b, double2 a)
 __constant__ int msgInd_d0[] = {-1, -1, 0, -1, -1, -1, 1, -1, -1, -1, -1, -1};
 __constant__ int msgInd_d3[] = {0, -1, -1, -1, -1, -1, -1, -1, -1, 1, 2, 3};
 
-__global__ void updateEnd_d0(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuffer, PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr potentials, int2* lapInd, double2 lapfacs, double g, uint3 dimensions)
+__global__ void copyMsg_d0(PitchedPtr msgReceiveBuffer, PitchedPtr prevStep, uint3 dimensions)
+{
+    size_t xid = blockIdx.x * blockDim.x + threadIdx.x;
+	size_t yid = blockIdx.y * blockDim.y + threadIdx.y;
+	size_t zid = blockIdx.z * blockDim.z + threadIdx.z;
+
+    size_t dataZid = zid / MSG_VALUES_IN_BLOCK_D0;
+
+	// Exit leftover threads
+	if (xid >= dimensions.x || yid >= dimensions.y || dataZid >= dimensions.z)
+	{
+		return;
+	}
+
+	char* prevPsi = prevStep.ptr + prevStep.slicePitch * dataZid + prevStep.pitch * yid + sizeof(BlockPsis) * xid;
+	MsgPsis_d3_d0* msgReceive = (MsgPsis_d3_d0*)(msgReceiveBuffer.ptr + msgReceiveBuffer.pitch * yid) + xid;
+
+	size_t dualNodeId = zid % MSG_VALUES_IN_BLOCK_D0;
+
+    int dstInds[4] = {0, 9, 10, 11};
+    int dstInd = dstInds[dualNodeId];
+
+    ((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[dstInd] = msgReceive->values[dualNodeId];
+}
+
+__global__ void copyMsg_d3(PitchedPtr msgReceiveBuffer, PitchedPtr prevStep, uint3 dimensions)
+{
+    size_t xid = blockIdx.x * blockDim.x + threadIdx.x;
+	size_t yid = blockIdx.y * blockDim.y + threadIdx.y;
+	size_t zid = blockIdx.z * blockDim.z + threadIdx.z;
+
+	size_t dataZid = zid / MSG_VALUES_IN_BLOCK_D3;
+
+	// Exit leftover threads
+	if (xid >= dimensions.x || yid >= dimensions.y || dataZid >= dimensions.z)
+	{
+		return;
+	}
+
+	char* prevPsi = prevStep.ptr + prevStep.slicePitch * dataZid + prevStep.pitch * yid + sizeof(BlockPsis) * xid;
+	MsgPsis_d0_d3* msgReceive = (MsgPsis_d0_d3*)(msgReceiveBuffer.ptr + msgReceiveBuffer.pitch * yid) + xid;
+
+	size_t dualNodeId = zid % MSG_VALUES_IN_BLOCK_D3;
+
+    int dstInds[4] = {2, 6};
+    int dstInd = dstInds[dualNodeId];
+
+    ((BlockPsis*)(prevPsi + prevStep.slicePitch))->values[dstInd] = msgReceive->values[dualNodeId];
+}
+
+__global__ void updateEnd_d0(PitchedPtr msgSendBuffer, PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr potentials, int2* lapInd, double2 lapfacs, double g, uint3 dimensions)
 {
 	size_t xid = blockIdx.x * blockDim.x + threadIdx.x;
 	size_t yid = blockIdx.y * blockDim.y + threadIdx.y;
@@ -245,22 +297,10 @@ __global__ void updateEnd_d0(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuff
 	char* prevPsi = prevStep.ptr + prevStep.slicePitch * dataZid + prevStep.pitch * yid + sizeof(BlockPsis) * xid;
 	BlockPsis* nextPsi = (BlockPsis*)(nextStep.ptr + nextStep.slicePitch * dataZid + nextStep.pitch * yid) + xid;
 	MsgPsis_d0_d3* msgSend = (MsgPsis_d0_d3*)(msgSendBuffer.ptr + msgSendBuffer.pitch * yid) + xid;
-	MsgPsis_d3_d0* msgReceive = (MsgPsis_d3_d0*)(msgReceiveBuffer.ptr + msgReceiveBuffer.pitch * yid) + xid;
 	BlockPots* pot = (BlockPots*)(potentials.ptr + potentials.slicePitch * dataZid + potentials.pitch * yid) + xid;
 
 	// Update psi
 	size_t dualNodeId = zid % VALUES_IN_BLOCK; // Dual node id. One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
-
-    if (dualNodeId == 2)
-    {
-	    ((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[0] = msgReceive->values[0];
-	    ((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[11] = msgReceive->values[3];
-    }
-    else if (dualNodeId == 6)
-    {
-	    ((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[9] = msgReceive->values[1];
-	    ((BlockPsis*)(prevPsi - prevStep.slicePitch))->values[10] = msgReceive->values[2];
-    }
 
     // 4 primary faces
 	uint face = dualNodeId * FACE_COUNT;
@@ -280,7 +320,7 @@ __global__ void updateEnd_d0(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuff
 		msgSend->values[msgInd] = nextPsi->values[dualNodeId];
 };
 
-__global__ void updateEnd_d3(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuffer, PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr potentials, int2* lapInd, double2 lapfacs, double g, uint3 dimensions)
+__global__ void updateEnd_d3(PitchedPtr msgSendBuffer, PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr potentials, int2* lapInd, double2 lapfacs, double g, uint3 dimensions)
 {
 	size_t xid = blockIdx.x * blockDim.x + threadIdx.x;
 	size_t yid = blockIdx.y * blockDim.y + threadIdx.y;
@@ -307,20 +347,10 @@ __global__ void updateEnd_d3(PitchedPtr msgSendBuffer, PitchedPtr msgReceiveBuff
 	char* prevPsi = prevStep.ptr + prevStep.slicePitch * dataZid + prevStep.pitch * yid + sizeof(BlockPsis) * xid;
 	BlockPsis* nextPsi = (BlockPsis*)(nextStep.ptr + nextStep.slicePitch * dataZid + nextStep.pitch * yid) + xid;
 	MsgPsis_d3_d0* msgSend = (MsgPsis_d3_d0*)(msgSendBuffer.ptr + msgSendBuffer.pitch * yid) + xid;
-	MsgPsis_d0_d3* msgReceive = (MsgPsis_d0_d3*)(msgReceiveBuffer.ptr + msgReceiveBuffer.pitch * yid) + xid;
 	BlockPots* pot = (BlockPots*)(potentials.ptr + potentials.slicePitch * dataZid + potentials.pitch * yid) + xid;
 
 	// Update psi
 	size_t dualNodeId = zid % VALUES_IN_BLOCK; // Dual node id. One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
-
-    if (dualNodeId == 0 || dualNodeId == 11)
-    {
-	    ((BlockPsis*)(prevPsi + prevStep.slicePitch))->values[2] = msgReceive->values[0];
-    }
-    else if (dualNodeId == 9 || dualNodeId == 10)
-    {
-	    ((BlockPsis*)(prevPsi + prevStep.slicePitch))->values[6] = msgReceive->values[1];
-    }
 
     // 4 primary faces
 	uint face = dualNodeId * FACE_COUNT;
@@ -926,6 +956,8 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	double2 lapfacs = make_double2(lapfac, lapfac0);
 	uint iter = 0;
 	dim3 dimBlock(THREAD_BLOCK_X, THREAD_BLOCK_Y, THREAD_BLOCK_Z * VALUES_IN_BLOCK);
+    dim3 dimBlockMsg_d0(THREAD_BLOCK_X, THREAD_BLOCK_Y, THREAD_BLOCK_Z * MSG_VALUES_IN_BLOCK_D0);
+    dim3 dimBlockMsg_d3(THREAD_BLOCK_X, THREAD_BLOCK_Y, THREAD_BLOCK_Z * MSG_VALUES_IN_BLOCK_D3);
 	dim3 dimGrid_d0((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
 					(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
 					(zsize_d0 + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
@@ -1253,7 +1285,8 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaStreamWaitEvent(stream0_d0, event_d1_to_d0, 0);
 			if (!first)
 			{
-				updateEnd_d0<<<dimGrid_oneSlice, dimBlock, 0, stream0_d0>>>(d_msg_send_d0, d_msg_receive_d0, d_oddPsi_d0, d_evenPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensions_oneSlice);
+                copyMsg_d0<<<dimGrid_oneSlice, dimBlockMsg_d0, 0, stream0_d0>>>(d_msg_receive_d0, d_evenPsi_d0, dimensions_oneSlice);
+				updateEnd_d0<<<dimGrid_oneSlice, dimBlock, 0, stream0_d0>>>(d_msg_send_d0, d_oddPsi_d0, d_evenPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensions_oneSlice);
 				cudaEventRecord(event_d0_kernel, stream0_d0);
 				update<<<dimGrid_rest_d0, dimBlock, 0, stream0_d0>>>(d_oddPsi_rest_d0, d_evenPsi_rest_d0, d_pot_rest_d0, d_lapind_d0, lapfacs, g, dimensions_rest_d0);
 			}
@@ -1265,7 +1298,8 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaStreamWaitEvent(stream0_d3, event_d2_to_d3, 0);
 			if (!last)
 			{
-				updateEnd_d3<<<dimGrid_oneSlice, dimBlock, 0, stream0_d3>>>(d_msg_send_d3, d_msg_receive_d3, d_oddPsi_lastSlice_d3, d_evenPsi_lastSlice_d3, d_pot_lastSlice_d3, d_lapind_d3, lapfacs, g, dimensions_oneSlice);
+                copyMsg_d3<<<dimGrid_oneSlice, dimBlockMsg_d3, 0, stream0_d3>>>(d_msg_receive_d3, d_evenPsi_lastSlice_d3, dimensions_oneSlice);
+				updateEnd_d3<<<dimGrid_oneSlice, dimBlock, 0, stream0_d3>>>(d_msg_send_d3, d_oddPsi_lastSlice_d3, d_evenPsi_lastSlice_d3, d_pot_lastSlice_d3, d_lapind_d3, lapfacs, g, dimensions_oneSlice);
 				cudaEventRecord(event_d3_kernel, stream0_d3);
 				update<<<dimGrid_rest_d3, dimBlock, 0, stream0_d3>>>(d_oddPsi_d3, d_evenPsi_d3, d_pot_d3, d_lapind_d3, lapfacs, g, dimensions_rest_d3);
 			}
@@ -1331,7 +1365,8 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaStreamWaitEvent(stream0_d0, event_d1_to_d0, 0);
 			if (!first)
 			{
-				updateEnd_d0<<<dimGrid_oneSlice, dimBlock, 0, stream0_d0>>>(d_msg_send_d0, d_msg_receive_d0, d_evenPsi_d0, d_oddPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensions_oneSlice);
+                copyMsg_d0<<<dimGrid_oneSlice, dimBlockMsg_d0, 0, stream0_d0>>>(d_msg_receive_d0, d_oddPsi_d0, dimensions_oneSlice);
+				updateEnd_d0<<<dimGrid_oneSlice, dimBlock, 0, stream0_d0>>>(d_msg_send_d0, d_evenPsi_d0, d_oddPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensions_oneSlice);
 				cudaEventRecord(event_d0_kernel, stream0_d0);
 				update<<<dimGrid_rest_d0, dimBlock, 0, stream0_d0>>>(d_evenPsi_rest_d0, d_oddPsi_rest_d0, d_pot_rest_d0, d_lapind_d0, lapfacs, g, dimensions_rest_d0);
 			}
@@ -1343,7 +1378,8 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaStreamWaitEvent(stream0_d3, event_d2_to_d3, 0);
 			if (!last)
 			{
-				updateEnd_d3<<<dimGrid_oneSlice, dimBlock, 0, stream0_d3>>>(d_msg_send_d3, d_msg_receive_d3, d_evenPsi_lastSlice_d3, d_oddPsi_lastSlice_d3, d_pot_lastSlice_d3, d_lapind_d3, lapfacs, g, dimensions_oneSlice);
+                copyMsg_d3<<<dimGrid_oneSlice, dimBlockMsg_d3, 0, stream0_d3>>>(d_msg_receive_d3, d_oddPsi_lastSlice_d3, dimensions_oneSlice);
+				updateEnd_d3<<<dimGrid_oneSlice, dimBlock, 0, stream0_d3>>>(d_msg_send_d3, d_evenPsi_lastSlice_d3, d_oddPsi_lastSlice_d3, d_pot_lastSlice_d3, d_lapind_d3, lapfacs, g, dimensions_oneSlice);
 				cudaEventRecord(event_d3_kernel, stream0_d3);
 				update<<<dimGrid_rest_d3, dimBlock, 0, stream0_d3>>>(d_evenPsi_d3, d_oddPsi_d3, d_pot_d3, d_lapind_d3, lapfacs, g, dimensions_rest_d3);
 			}
