@@ -14,15 +14,17 @@ ddouble RATIO = 0.1;
 ddouble KAPPA = 20;
 ddouble G = 5000;
 
+#define GPU_COUNT 4
+
 #define LOAD_STATE_FROM_DISK 1
 #define SAVE_PICTURE 0
-#define SAVE_VOLUME 0
+#define SAVE_VOLUME 1
 
 #define THREAD_BLOCK_X 8
 #define THREAD_BLOCK_Y 8
 #define THREAD_BLOCK_Z 1
-#define FACE_COUNT 4
-#define VALUES_IN_BLOCK 12
+#define FACE_COUNT 4 // Primary faces
+#define VALUES_IN_BLOCK 12 // Dual nodes
 #define INDICES_PER_BLOCK 48
 
 ddouble potentialRZ(const ddouble r, const ddouble z)
@@ -90,54 +92,78 @@ void getPositions(Buffer<Vector3> &pos)
 ddouble getLaplacian(Buffer<int2> &ind, const int nx, const int ny, const int nz) // nx, ny, nz in bytes
 {
 	ind.resize(48);
+    // Primary faces of the 1. dual node
 	ind[0] = make_int2(0, 9);
 	ind[1] = make_int2(0, 10);
-	ind[2] = make_int2(-nx + nz, 2);
+	ind[2] = make_int2(nz - nx, 2);
 	ind[3] = make_int2(-nx, 3);
+
+    // Primary faces of the 2. dual node
 	ind[4] = make_int2(0, 2);
 	ind[5] = make_int2(0, 3);
 	ind[6] = make_int2(nx - ny, 5);
 	ind[7] = make_int2(-ny, 8);
+
+    // Primary faces of the 3. dual node
 	ind[8] = make_int2(0, 1);
 	ind[9] = make_int2(0, 4);
-	ind[10] = make_int2(nx - nz, 0);
+	ind[10] = make_int2(-nz + nx, 0);
 	ind[11] = make_int2(-nz, 11);
-	ind[12] = make_int2(0, 1);
+
+	// Primary faces of the 4. dual node
+    ind[12] = make_int2(0, 1);
 	ind[13] = make_int2(0, 4);
 	ind[14] = make_int2(nx, 0);
 	ind[15] = make_int2(0, 11);
+
+    // Primary faces of the 5. dual node
 	ind[16] = make_int2(0, 2);
 	ind[17] = make_int2(0, 3);
 	ind[18] = make_int2(nx, 5);
 	ind[19] = make_int2(0, 8);
+
+    // Primary faces of the 6. dual node
 	ind[20] = make_int2(0, 6);
 	ind[21] = make_int2(0, 7);
 	ind[22] = make_int2(-nx + ny, 1);
 	ind[23] = make_int2(-nx, 4);
+
+    // Primary faces of the 7. dual node
 	ind[24] = make_int2(0, 5);
 	ind[25] = make_int2(0, 8);
-	ind[26] = make_int2(ny - nz, 9);
+	ind[26] = make_int2(-nz + ny, 9);
 	ind[27] = make_int2(-nz, 10);
+
+    // Primary faces of the 8. dual node
 	ind[28] = make_int2(0, 5);
 	ind[29] = make_int2(0, 8);
 	ind[30] = make_int2(ny, 9);
 	ind[31] = make_int2(0, 10);
+
+    // Primary faces of the 9. dual node
 	ind[32] = make_int2(0, 6);
 	ind[33] = make_int2(0, 7);
 	ind[34] = make_int2(ny, 1);
 	ind[35] = make_int2(0, 4);
+
+    // Primary faces of the 10. dual node
 	ind[36] = make_int2(0, 0);
 	ind[37] = make_int2(0, 11);
-	ind[38] = make_int2(-ny + nz, 6);
+	ind[38] = make_int2(nz - ny, 6);
 	ind[39] = make_int2(-ny, 7);
+
+    // Primary faces of the 11. dual node
 	ind[40] = make_int2(0, 0);
 	ind[41] = make_int2(0, 11);
 	ind[42] = make_int2(nz, 6);
 	ind[43] = make_int2(0, 7);
+
+    // Primary faces of the 12. dual node
 	ind[44] = make_int2(0, 9);
 	ind[45] = make_int2(0, 10);
 	ind[46] = make_int2(nz, 2);
 	ind[47] = make_int2(0, 3);
+
 	return 1.5;
 }
 
@@ -173,22 +199,22 @@ inline __host__ __device__ double2 operator*(double b, double2 a)
     return make_double2(b * a.x, b * a.y);
 }
 
-__global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr potentials, int2* lapind, double2 lapfacs, double g, uint3 dimensions)
+__global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr potentials, int2* lapInd, double2 lapfacs, double g, uint3 dimensions)
 {
 	size_t xid = blockIdx.x * blockDim.x + threadIdx.x;
 	size_t yid = blockIdx.y * blockDim.y + threadIdx.y;
 	size_t zid = blockIdx.z * blockDim.z + threadIdx.z;
 
 	// Load Laplacian indices into LDS
-	__shared__ int2 ldsLapind[INDICES_PER_BLOCK];
+	__shared__ int2 ldsLapInd[INDICES_PER_BLOCK];
 	size_t threadIdxInBlock = blockDim.x * blockDim.y * threadIdx.z + blockDim.x * threadIdx.y + threadIdx.x;
 	if (threadIdxInBlock < INDICES_PER_BLOCK)
 	{
-		ldsLapind[threadIdxInBlock] = lapind[threadIdxInBlock];
+		ldsLapInd[threadIdxInBlock] = lapInd[threadIdxInBlock];
 	}
 	__syncthreads();
 
-	size_t dataZid = zid / VALUES_IN_BLOCK;
+	size_t dataZid = zid / VALUES_IN_BLOCK; // One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
 
 	// Exit leftover threads
 	if (xid >= dimensions.x || yid >= dimensions.y || dataZid >= dimensions.z)
@@ -202,17 +228,20 @@ __global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr pote
 	BlockPots* pot = (BlockPots*)(potentials.ptr + potentials.slicePitch * dataZid + potentials.pitch * yid) + xid;
 
 	// Update psi
-	size_t nodeId = zid % VALUES_IN_BLOCK;
-	uint lapi = nodeId * FACE_COUNT;
-	double2 sum = (*(BlockPsis*)(prevPsi + ldsLapind[lapi].x)).values[ldsLapind[lapi++].y];
-	sum += (*(BlockPsis*)(prevPsi + ldsLapind[lapi].x)).values[ldsLapind[lapi++].y];
-	sum += (*(BlockPsis*)(prevPsi + ldsLapind[lapi].x)).values[ldsLapind[lapi++].y];
-	sum += (*(BlockPsis*)(prevPsi + ldsLapind[lapi].x)).values[ldsLapind[lapi++].y];
-	double2 prev = (*(BlockPsis*)prevPsi).values[nodeId];
-	double normsq = prev.x * prev.x + prev.y * prev.y;
-	sum = lapfacs.x * sum + (lapfacs.y + (*pot).values[nodeId] + g * normsq) * prev;
+	size_t dualNodeId = zid % VALUES_IN_BLOCK; // Dual node id. One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
 
-	(*nextPsi).values[nodeId] += make_double2(sum.y, -sum.x);
+    // 4 primary faces
+    uint face = dualNodeId * FACE_COUNT;
+	double2 sum =  (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
+	        sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
+	        sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
+	        sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
+
+	double2 prev = (*(BlockPsis*)prevPsi).values[dualNodeId];
+	double normsq = prev.x * prev.x + prev.y * prev.y;
+	sum = lapfacs.x * sum + (lapfacs.y + (*pot).values[dualNodeId] + g * normsq) * prev;
+
+	(*nextPsi).values[dualNodeId] += make_double2(sum.y, -sum.x);
 };
 
 uint integrateInTime(const VortexState &state, const ddouble block_scale, const Vector3 &minp, const Vector3 &maxp, const ddouble iteration_period, const uint number_of_iterations)
@@ -226,8 +255,17 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	const uint zsize = uint(domain.z / (block_scale * BLOCK_WIDTH.z)) + 1;
 	const Vector3 p0 = 0.5 * (minp + maxp - block_scale * Vector3(BLOCK_WIDTH.x * xsize, BLOCK_WIDTH.y * ysize, BLOCK_WIDTH.z * zsize));
 
-	const uint zsize_d0 = zsize / 2 + zsize % 2;
-	const uint zsize_d1 = zsize / 2;
+	uint zSizes[GPU_COUNT];
+	uint zRemainder = zsize % GPU_COUNT;
+	for (uint gpuIdx = 0; gpuIdx < GPU_COUNT; ++gpuIdx)
+	{
+		zSizes[gpuIdx] = zsize / GPU_COUNT;
+		if (zRemainder)
+		{
+			zSizes[gpuIdx]++;
+			zRemainder--;
+		}
+	}
 
 	//std::cout << xsize << ", " << ysize << ", " << zsize << std::endl;
 
@@ -268,58 +306,10 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 		}
 	}
 
-	// Initialize device memory
-	size_t dxsize = xsize + 2; // One element buffer to both ends
-	size_t dysize = ysize + 2;
-	size_t dzsize_d0 = zsize_d0 + 2;
-	size_t dzsize_d1 = zsize_d1 + 2;
-
-	cudaExtent psiExtent_d0 = make_cudaExtent(dxsize * sizeof(BlockPsis), dysize, dzsize_d0);
-	cudaExtent potExtent_d0 = make_cudaExtent(dxsize * sizeof(BlockPots), dysize, dzsize_d0);
-
-	cudaExtent psiExtent_d1 = make_cudaExtent(dxsize * sizeof(BlockPsis), dysize, dzsize_d1);
-	cudaExtent potExtent_d1 = make_cudaExtent(dxsize * sizeof(BlockPots), dysize, dzsize_d1);
-
-	cudaPitchedPtr d_cudaEvenPsi_d0;
-	cudaPitchedPtr d_cudaOddPsi_d0;
-	cudaPitchedPtr d_cudaPot_d0;
-
-	cudaPitchedPtr d_cudaEvenPsi_d1;
-	cudaPitchedPtr d_cudaOddPsi_d1;
-	cudaPitchedPtr d_cudaPot_d1;
-
-	cudaSetDevice(0);
-	cudaDeviceEnablePeerAccess(1, 0);
-	checkCudaErrors(cudaMalloc3D(&d_cudaEvenPsi_d0, psiExtent_d0));
-	checkCudaErrors(cudaMalloc3D(&d_cudaOddPsi_d0, psiExtent_d0));
-	checkCudaErrors(cudaMalloc3D(&d_cudaPot_d0, potExtent_d0));
-
-	cudaSetDevice(1);
-	cudaDeviceEnablePeerAccess(0, 0);
-	checkCudaErrors(cudaMalloc3D(&d_cudaEvenPsi_d1, psiExtent_d1));
-	checkCudaErrors(cudaMalloc3D(&d_cudaOddPsi_d1, psiExtent_d1));
-	checkCudaErrors(cudaMalloc3D(&d_cudaPot_d1, potExtent_d1));
-
-	size_t offset_d0 = d_cudaEvenPsi_d0.pitch * dysize + d_cudaEvenPsi_d0.pitch + sizeof(BlockPsis);
-	size_t potOffset_d0 = d_cudaPot_d0.pitch * dysize + d_cudaPot_d0.pitch + sizeof(BlockPots);
-	PitchedPtr d_evenPsi_d0 = {(char*)d_cudaEvenPsi_d0.ptr + offset_d0, d_cudaEvenPsi_d0.pitch, d_cudaEvenPsi_d0.pitch * dysize};
-	PitchedPtr d_oddPsi_d0 = {(char*)d_cudaOddPsi_d0.ptr + offset_d0, d_cudaOddPsi_d0.pitch, d_cudaOddPsi_d0.pitch * dysize};
-	PitchedPtr d_pot_d0 = {(char*)d_cudaPot_d0.ptr + potOffset_d0, d_cudaPot_d0.pitch, d_cudaPot_d0.pitch * dysize};
-
-	size_t offset_d1 = d_cudaEvenPsi_d1.pitch * dysize + d_cudaEvenPsi_d1.pitch + sizeof(BlockPsis);
-	size_t potOffset_d1 = d_cudaPot_d1.pitch * dysize + d_cudaPot_d1.pitch + sizeof(BlockPots);
-	PitchedPtr d_evenPsi_d1 = {(char*)d_cudaEvenPsi_d1.ptr + offset_d1, d_cudaEvenPsi_d1.pitch, d_cudaEvenPsi_d1.pitch * dysize};
-	PitchedPtr d_oddPsi_d1 = {(char*)d_cudaOddPsi_d1.ptr + offset_d1, d_cudaOddPsi_d1.pitch, d_cudaOddPsi_d1.pitch * dysize};
-	PitchedPtr d_pot_d1 = {(char*)d_cudaPot_d1.ptr + potOffset_d1, d_cudaPot_d1.pitch, d_cudaPot_d1.pitch * dysize};
-
-	// find terms for laplacian
-	Buffer<int2> lapind_d0;
-	ddouble lapfac = -0.5 * getLaplacian(lapind_d0, sizeof(BlockPsis), d_evenPsi_d0.pitch, d_evenPsi_d0.slicePitch) / (block_scale * block_scale);
-	const uint lapsize = lapind_d0.size() / bsize;
+	Buffer<int2> dummyLapind;
+	ddouble lapfac = -0.5 * getLaplacian(dummyLapind, 0, 0, 0) / (block_scale * block_scale);
+	const uint lapsize = dummyLapind.size() / bsize;
 	ddouble lapfac0 = lapsize * (-lapfac);
-
-	Buffer<int2> lapind_d1;
-	getLaplacian(lapind_d1, sizeof(BlockPsis), d_evenPsi_d1.pitch, d_evenPsi_d1.slicePitch) / (block_scale * block_scale);
 
 	// compute time step size
 	const uint steps_per_iteration = uint(iteration_period * (maxpot + lapfac0)) + 1; // number of time steps per iteration period
@@ -331,17 +321,11 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	g *= time_step_size;
 	lapfac *= time_step_size;
 	lapfac0 *= time_step_size;
-	for(i=0; i<vsize; i++) pot[i] *= time_step_size;
-
-	int2* d_lapind_d0;
-	cudaSetDevice(0);
-	checkCudaErrors(cudaMalloc(&d_lapind_d0, lapind_d0.size() * sizeof(int2)));
-
-	int2* d_lapind_d1;
-	cudaSetDevice(1);
-	checkCudaErrors(cudaMalloc(&d_lapind_d1, lapind_d1.size() * sizeof(int2)));
+	for (i = 0; i < vsize; i++) pot[i] *= time_step_size;
 
 	// Initialize host memory
+	size_t dxsize = xsize + 2; // One element buffer to both ends
+	size_t dysize = ysize + 2;
 	size_t hostSize = dxsize * dysize * (zsize + 2);
 	BlockPsis* h_evenPsi;// = new BlockPsis[dxsize * dysize * (zsize + 2)];
 	BlockPsis* h_oddPsi;// = new BlockPsis[dxsize * dysize * (zsize + 2)];
@@ -356,125 +340,124 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	// initialize discrete field
 	const Complex oddPhase = state.getPhase(-0.5 * time_step_size);
 	Random rnd(54363);
-	for(k=0; k<zsize; k++)
+	for (k = 0; k < zsize; k++)
 	{
-		for(j=0; j<ysize; j++)
+		for (j = 0; j < ysize; j++)
 		{
-			for(i=0; i<xsize; i++)
+			for (i = 0; i < xsize; i++)
 			{
-				for(l=0; l<bsize; l++)
-				{		
+				for (l = 0; l < bsize; l++)
+				{
 					const uint srcI = ii0 + k * bxysize + j * bxsize + i * bsize + l;
-					const uint dstI = (k+1) * dxsize*dysize + (j+1) * dxsize + (i+1);
+					const uint dstI = (k + 1) * dxsize * dysize + (j + 1) * dxsize + (i + 1);
 					const Vector2 c = 0.01 * rnd.getUniformCircle();
 					const Complex noise(c.x + 1.0, c.y);
 					const Complex noisedPsi = Psi0[srcI] * noise;
 					double2 even = make_double2(noisedPsi.r, noisedPsi.i);
 					h_evenPsi[dstI].values[l] = even;
 					h_oddPsi[dstI].values[l] = make_double2(oddPhase.r * even.x - oddPhase.i * even.y,
-															oddPhase.i * even.x + oddPhase.r * even.y);
+						oddPhase.i * even.x + oddPhase.r * even.y);
 					h_pot[dstI].values[l] = pot[srcI];
 				}
 			}
 		}
 	}
 
-	cudaPitchedPtr h_cudaEvenPsi_d0 = {0};
-	cudaPitchedPtr h_cudaOddPsi_d0 = {0};
-	cudaPitchedPtr h_cudaPot_d0 = {0};
+	// Initialize device memory
+	cudaPitchedPtr d_cudaEvenPsis[GPU_COUNT];
+	cudaPitchedPtr d_cudaOddPsis[GPU_COUNT];
+	cudaPitchedPtr d_cudaPots[GPU_COUNT];
+	PitchedPtr d_evenPsis[GPU_COUNT];
+	PitchedPtr d_oddPsis[GPU_COUNT];
+	PitchedPtr d_pots[GPU_COUNT];
+	int2* d_lapinds[GPU_COUNT];
+	cudaPitchedPtr h_cudaEvenPsis[GPU_COUNT];
+	cudaExtent psiExtents[GPU_COUNT];
 
-	cudaPitchedPtr h_cudaEvenPsi_d1 = {0};
-	cudaPitchedPtr h_cudaOddPsi_d1 = {0};
-	cudaPitchedPtr h_cudaPot_d1 = {0};
+	size_t dzSizes[GPU_COUNT];
+	for (uint gpuIdx = 0; gpuIdx < GPU_COUNT; ++gpuIdx)
+	{
+		dzSizes[gpuIdx] = zSizes[gpuIdx] + 2;
 
-	h_cudaEvenPsi_d0.ptr = h_evenPsi;
-	h_cudaEvenPsi_d0.pitch = dxsize * sizeof(BlockPsis);
-	h_cudaEvenPsi_d0.xsize = d_cudaEvenPsi_d0.xsize;
-	h_cudaEvenPsi_d0.ysize = d_cudaEvenPsi_d0.ysize;
+		psiExtents[gpuIdx] = make_cudaExtent(dxsize * sizeof(BlockPsis), dysize, dzSizes[gpuIdx]);
+		cudaExtent potExtent = make_cudaExtent(dxsize * sizeof(BlockPots), dysize, dzSizes[gpuIdx]);
 
-	h_cudaEvenPsi_d1.ptr = h_evenPsi + dxsize * dysize * (dzsize_d0 - 2);
-	h_cudaEvenPsi_d1.pitch = dxsize * sizeof(BlockPsis);
-	h_cudaEvenPsi_d1.xsize = d_cudaEvenPsi_d1.xsize;
-	h_cudaEvenPsi_d1.ysize = d_cudaEvenPsi_d1.ysize;
+		cudaSetDevice(gpuIdx);
+		for (uint peerGpu = 0; peerGpu < GPU_COUNT; ++peerGpu)
+		{
+			cudaDeviceEnablePeerAccess(peerGpu, 0);
+		}
+		checkCudaErrors(cudaMalloc3D(&d_cudaEvenPsis[gpuIdx], psiExtents[gpuIdx]));
+		checkCudaErrors(cudaMalloc3D(&d_cudaOddPsis[gpuIdx], psiExtents[gpuIdx]));
+		checkCudaErrors(cudaMalloc3D(&d_cudaPots[gpuIdx], potExtent));
 
-	h_cudaOddPsi_d0.ptr = h_oddPsi;
-	h_cudaOddPsi_d0.pitch = dxsize * sizeof(BlockPsis);
-	h_cudaOddPsi_d0.xsize = d_cudaOddPsi_d0.xsize;
-	h_cudaOddPsi_d0.ysize = d_cudaOddPsi_d0.ysize;
-
-	h_cudaOddPsi_d1.ptr = h_oddPsi + dxsize * dysize * (dzsize_d0 - 2);
-	h_cudaOddPsi_d1.pitch = dxsize * sizeof(BlockPsis);
-	h_cudaOddPsi_d1.xsize = d_cudaOddPsi_d1.xsize;
-	h_cudaOddPsi_d1.ysize = d_cudaOddPsi_d1.ysize;
-
-	h_cudaPot_d0.ptr = h_pot;
-	h_cudaPot_d0.pitch = dxsize * sizeof(BlockPots);
-	h_cudaPot_d0.xsize = d_cudaPot_d0.xsize;
-	h_cudaPot_d0.ysize = d_cudaPot_d0.ysize;
-
-	h_cudaPot_d1.ptr = h_pot + dxsize * dysize * (dzsize_d0 - 2);
-	h_cudaPot_d1.pitch = dxsize * sizeof(BlockPots);
-	h_cudaPot_d1.xsize = d_cudaPot_d1.xsize;
-	h_cudaPot_d1.ysize = d_cudaPot_d1.ysize;
-
-	// Copy from host memory to device memory
-	cudaMemcpy3DParms evenPsiParams_d0 = {0};
-	cudaMemcpy3DParms oddPsiParams_d0 = {0};
-	cudaMemcpy3DParms potParams_d0 = {0};
-
-	cudaMemcpy3DParms evenPsiParams_d1 = {0};
-	cudaMemcpy3DParms oddPsiParams_d1 = {0};
-	cudaMemcpy3DParms potParams_d1 = {0};
-
-	evenPsiParams_d0.srcPtr = h_cudaEvenPsi_d0;
-	evenPsiParams_d0.dstPtr = d_cudaEvenPsi_d0;
-	evenPsiParams_d0.extent = psiExtent_d0;
-	evenPsiParams_d0.kind = cudaMemcpyHostToDevice;
-
-	evenPsiParams_d1.srcPtr = h_cudaEvenPsi_d1;
-	evenPsiParams_d1.dstPtr = d_cudaEvenPsi_d1;
-	evenPsiParams_d1.extent = psiExtent_d1;
-	evenPsiParams_d1.kind = cudaMemcpyHostToDevice;
-
-	oddPsiParams_d0.srcPtr = h_cudaOddPsi_d0;
-	oddPsiParams_d0.dstPtr = d_cudaOddPsi_d0;
-	oddPsiParams_d0.extent = psiExtent_d0;
-	oddPsiParams_d0.kind = cudaMemcpyHostToDevice;
-
-	oddPsiParams_d1.srcPtr = h_cudaOddPsi_d1;
-	oddPsiParams_d1.dstPtr = d_cudaOddPsi_d1;
-	oddPsiParams_d1.extent = psiExtent_d1;
-	oddPsiParams_d1.kind = cudaMemcpyHostToDevice;
-
-	potParams_d0.srcPtr = h_cudaPot_d0;
-	potParams_d0.dstPtr = d_cudaPot_d0;
-	potParams_d0.extent = potExtent_d0;
-	potParams_d0.kind = cudaMemcpyHostToDevice;
-
-	potParams_d1.srcPtr = h_cudaPot_d1;
-	potParams_d1.dstPtr = d_cudaPot_d1;
-	potParams_d1.extent = potExtent_d1;
-	potParams_d1.kind = cudaMemcpyHostToDevice;
-
-	cudaSetDevice(0);
-	checkCudaErrors(cudaMemcpy3DAsync(&evenPsiParams_d0));
-	checkCudaErrors(cudaMemcpy3DAsync(&oddPsiParams_d0));
-	checkCudaErrors(cudaMemcpy3DAsync(&potParams_d0));
-	checkCudaErrors(cudaMemcpyAsync(d_lapind_d0, &lapind_d0[0], lapind_d0.size() * sizeof(int2), cudaMemcpyHostToDevice));
-
-	cudaSetDevice(1);
-	checkCudaErrors(cudaMemcpy3DAsync(&evenPsiParams_d1));
-	checkCudaErrors(cudaMemcpy3DAsync(&oddPsiParams_d1));
-	checkCudaErrors(cudaMemcpy3DAsync(&potParams_d1));
-	checkCudaErrors(cudaMemcpyAsync(d_lapind_d1, &lapind_d1[0], lapind_d1.size() * sizeof(int2), cudaMemcpyHostToDevice));
+		// Offsets are for the zero valued padding on the edges, offset = z + y + x in bytes
+		size_t offset = d_cudaEvenPsis[gpuIdx].pitch * dysize + d_cudaEvenPsis[gpuIdx].pitch + sizeof(BlockPsis);
+		size_t potOffset = d_cudaPots[gpuIdx].pitch * dysize + d_cudaPots[gpuIdx].pitch + sizeof(BlockPots);
+		PitchedPtr d_evenPsi = { (char*)d_cudaEvenPsis[gpuIdx].ptr + offset, d_cudaEvenPsis[gpuIdx].pitch, d_cudaEvenPsis[gpuIdx].pitch * dysize };
+		PitchedPtr d_oddPsi = { (char*)d_cudaOddPsis[gpuIdx].ptr + offset, d_cudaOddPsis[gpuIdx].pitch, d_cudaOddPsis[gpuIdx].pitch * dysize };
+		PitchedPtr d_pot = { (char*)d_cudaPots[gpuIdx].ptr + potOffset, d_cudaPots[gpuIdx].pitch, d_cudaPots[gpuIdx].pitch * dysize };
+		d_evenPsis[gpuIdx] = d_evenPsi;
+		d_oddPsis[gpuIdx] = d_oddPsi;
+		d_pots[gpuIdx] = d_pot;
 	
+		// find terms for laplacian
+		Buffer<int2> lapind;
+		getLaplacian(lapind, sizeof(BlockPsis), d_evenPsis[gpuIdx].pitch, d_evenPsis[gpuIdx].slicePitch) / (block_scale * block_scale);
+
+		checkCudaErrors(cudaMalloc(&d_lapinds[gpuIdx], lapind.size() * sizeof(int2)));
+
+		cudaPitchedPtr h_cudaOddPsi = { 0 };
+		cudaPitchedPtr h_cudaPot = { 0 };
+
+		h_cudaEvenPsis[gpuIdx].ptr = h_evenPsi + (dxsize * dysize * (dzSizes[gpuIdx] - 2)) * gpuIdx;
+		h_cudaEvenPsis[gpuIdx].pitch = dxsize * sizeof(BlockPsis);
+		h_cudaEvenPsis[gpuIdx].xsize = d_cudaEvenPsis[gpuIdx].xsize;
+		h_cudaEvenPsis[gpuIdx].ysize = d_cudaEvenPsis[gpuIdx].ysize;
+
+		h_cudaOddPsi.ptr = h_oddPsi + (dxsize * dysize * (dzSizes[gpuIdx] - 2)) * gpuIdx;
+		h_cudaOddPsi.pitch = dxsize * sizeof(BlockPsis);
+		h_cudaOddPsi.xsize = d_cudaOddPsis[gpuIdx].xsize;
+		h_cudaOddPsi.ysize = d_cudaOddPsis[gpuIdx].ysize;
+
+		h_cudaPot.ptr = h_pot + (dxsize * dysize * (dzSizes[gpuIdx] - 2)) * gpuIdx;
+		h_cudaPot.pitch = dxsize * sizeof(BlockPots);
+		h_cudaPot.xsize = d_cudaPots[gpuIdx].xsize;
+		h_cudaPot.ysize = d_cudaPots[gpuIdx].ysize;
+
+		// Copy from host memory to device memory
+		cudaMemcpy3DParms evenPsiParams = { 0 };
+		cudaMemcpy3DParms oddPsiParams = { 0 };
+		cudaMemcpy3DParms potParams = { 0 };
+
+		evenPsiParams.srcPtr = h_cudaEvenPsis[gpuIdx];
+		evenPsiParams.dstPtr = d_cudaEvenPsis[gpuIdx];
+		evenPsiParams.extent = psiExtents[gpuIdx];
+		evenPsiParams.kind = cudaMemcpyHostToDevice;
+
+		oddPsiParams.srcPtr = h_cudaOddPsi;
+		oddPsiParams.dstPtr = d_cudaOddPsis[gpuIdx];
+		oddPsiParams.extent = psiExtents[gpuIdx];
+		oddPsiParams.kind = cudaMemcpyHostToDevice;
+
+		potParams.srcPtr = h_cudaPot;
+		potParams.dstPtr = d_cudaPots[gpuIdx];
+		potParams.extent = potExtent;
+		potParams.kind = cudaMemcpyHostToDevice;
+
+		checkCudaErrors(cudaMemcpy3DAsync(&evenPsiParams));
+		checkCudaErrors(cudaMemcpy3DAsync(&oddPsiParams));
+		checkCudaErrors(cudaMemcpy3DAsync(&potParams));
+		checkCudaErrors(cudaMemcpyAsync(d_lapinds[gpuIdx], &lapind, lapind.size() * sizeof(int2), cudaMemcpyHostToDevice));
+
+		cudaDeviceSynchronize();
+		lapind.clear();
+	}
+
 	// Clear host memory after data has been copied to devices
-	cudaDeviceSynchronize();
 	Psi0.clear();
 	pot.clear();
 	bpos.clear();
-	lapind_d0.clear();
-	lapind_d1.clear();
 	cudaFreeHost(h_oddPsi);
 	cudaFreeHost(h_pot);
 #if !(SAVE_PICTURE || SAVE_VOLUME)
@@ -482,79 +465,245 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 #endif
 
 	// Integrate in time
-	uint3 dimensions_d0 = make_uint3(xsize, ysize, zsize_d0);
-	uint3 dimensions_d1 = make_uint3(xsize, ysize, zsize_d1);
+	uint3 dimensions_d0 = make_uint3(xsize, ysize, zSizes[0]);
+	uint3 dimensions_d1 = make_uint3(xsize, ysize, zSizes[1]);
+	uint3 dimensions_d2 = make_uint3(xsize, ysize, zSizes[2]);
+	uint3 dimensions_d3 = make_uint3(xsize, ysize, zSizes[3]);
 	double2 lapfacs = make_double2(lapfac, lapfac0);
 	uint iter = 0;
 	dim3 dimBlock(THREAD_BLOCK_X, THREAD_BLOCK_Y, THREAD_BLOCK_Z * VALUES_IN_BLOCK);
 	dim3 dimGrid_d0((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
 					(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
-					(zsize_d0 + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
+					(zSizes[0] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
 	dim3 dimGrid_d1((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
 					(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
-					(zsize_d1 + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
+					(zSizes[1] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
+	dim3 dimGrid_d2((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
+					(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
+					(zSizes[2] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
+	dim3 dimGrid_d3((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
+					(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
+					(zSizes[3] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
 
 	cudaExtent oneSliceExtent = make_cudaExtent(dxsize * sizeof(BlockPsis), dysize, 1);
 			
 	cudaMemcpy3DParms even_d0_to_d1 = {0};
 	cudaMemcpy3DParms even_d1_to_d0 = {0};
-
+	cudaMemcpy3DParms even_d1_to_d2 = {0};
+	cudaMemcpy3DParms even_d2_to_d1 = {0};
+	cudaMemcpy3DParms even_d2_to_d3 = {0};
+	cudaMemcpy3DParms even_d3_to_d2 = {0};
+	
 	cudaMemcpy3DParms odd_d0_to_d1 = {0};
 	cudaMemcpy3DParms odd_d1_to_d0 = {0};
+	cudaMemcpy3DParms odd_d1_to_d2 = {0};
+	cudaMemcpy3DParms odd_d2_to_d1 = {0};
+	cudaMemcpy3DParms odd_d2_to_d3 = {0};
+	cudaMemcpy3DParms odd_d3_to_d2 = {0};
 
-	cudaPitchedPtr even_d0_src = d_cudaEvenPsi_d0;
-	cudaPitchedPtr even_d0_dst = d_cudaEvenPsi_d0;
-	cudaPitchedPtr even_d1_src = d_cudaEvenPsi_d1;
-	cudaPitchedPtr even_d1_dst = d_cudaEvenPsi_d1;
+	cudaPitchedPtr even_d0_src = d_cudaEvenPsis[0];
+	cudaPitchedPtr even_d0_dst = d_cudaEvenPsis[0];
+	cudaPitchedPtr even_d1_src = d_cudaEvenPsis[1];
+	cudaPitchedPtr even_d1_dst = d_cudaEvenPsis[1];
+	cudaPitchedPtr even_d2_src = d_cudaEvenPsis[2];
+	cudaPitchedPtr even_d2_dst = d_cudaEvenPsis[2];
+	cudaPitchedPtr even_d3_src = d_cudaEvenPsis[3];
+	cudaPitchedPtr even_d3_dst = d_cudaEvenPsis[3];
+	
+	cudaPitchedPtr even_d1_src_to_d2 = d_cudaEvenPsis[1];
+	cudaPitchedPtr even_d1_dst_from_d2 = d_cudaEvenPsis[1];
+	cudaPitchedPtr even_d2_src_to_d1 = d_cudaEvenPsis[2];
+	cudaPitchedPtr even_d2_dst_from_d1 = d_cudaEvenPsis[2];
 
-	cudaPitchedPtr odd_d0_src = d_cudaOddPsi_d0;
-	cudaPitchedPtr odd_d0_dst = d_cudaOddPsi_d0;
-	cudaPitchedPtr odd_d1_src = d_cudaOddPsi_d1;
-	cudaPitchedPtr odd_d1_dst = d_cudaOddPsi_d1;
+	cudaPitchedPtr odd_d0_src = d_cudaOddPsis[0];
+	cudaPitchedPtr odd_d0_dst = d_cudaOddPsis[0];
+	cudaPitchedPtr odd_d1_src = d_cudaOddPsis[1];
+	cudaPitchedPtr odd_d1_dst = d_cudaOddPsis[1];
+	cudaPitchedPtr odd_d2_src = d_cudaOddPsis[2];
+	cudaPitchedPtr odd_d2_dst = d_cudaOddPsis[2];
+	cudaPitchedPtr odd_d3_src = d_cudaOddPsis[3];
+	cudaPitchedPtr odd_d3_dst = d_cudaOddPsis[3];
+	
+	cudaPitchedPtr odd_d1_src_to_d2 = d_cudaOddPsis[1];
+	cudaPitchedPtr odd_d1_dst_from_d2 = d_cudaOddPsis[1];
+	cudaPitchedPtr odd_d2_src_to_d1 = d_cudaOddPsis[2];
+	cudaPitchedPtr odd_d2_dst_from_d1 = d_cudaOddPsis[2];
 
-	even_d0_src.ptr = ((char*)even_d0_src.ptr) + d_evenPsi_d0.slicePitch * (dzsize_d0 - 2);
-	even_d0_dst.ptr = ((char*)even_d0_dst.ptr) + d_evenPsi_d0.slicePitch * (dzsize_d0 - 1);
-	even_d1_src.ptr = ((char*)even_d1_src.ptr) + d_evenPsi_d1.slicePitch * 1;
-	even_d1_dst.ptr = ((char*)even_d1_dst.ptr) + d_evenPsi_d1.slicePitch * 0;
+	even_d0_src.ptr = ((char*)even_d0_src.ptr) + d_evenPsis[0].slicePitch * (dzSizes[0] - 2);
+	even_d0_dst.ptr = ((char*)even_d0_dst.ptr) + d_evenPsis[0].slicePitch * (dzSizes[0] - 1);
+	even_d1_src.ptr = ((char*)even_d1_src.ptr) + d_evenPsis[1].slicePitch * 1;
+	even_d1_dst.ptr = ((char*)even_d1_dst.ptr) + d_evenPsis[1].slicePitch * 0;
+	even_d2_src.ptr = ((char*)even_d2_src.ptr) + d_evenPsis[2].slicePitch * (dzSizes[2] - 2);
+	even_d2_dst.ptr = ((char*)even_d2_dst.ptr) + d_evenPsis[2].slicePitch * (dzSizes[2] - 1);
+	even_d3_src.ptr = ((char*)even_d3_src.ptr) + d_evenPsis[3].slicePitch * 1;
+	even_d3_dst.ptr = ((char*)even_d3_dst.ptr) + d_evenPsis[3].slicePitch * 0;
+	
+	even_d1_src_to_d2.ptr = ((char*)even_d1_src_to_d2.ptr) + d_evenPsis[1].slicePitch * (dzSizes[1] - 2);
+	even_d1_dst_from_d2.ptr = ((char*)even_d1_dst_from_d2.ptr) + d_evenPsis[1].slicePitch * (dzSizes[1] - 1);
+	even_d2_src_to_d1.ptr = ((char*)even_d2_src_to_d1.ptr) + d_evenPsis[2].slicePitch * 1;
+	even_d2_dst_from_d1.ptr = ((char*)even_d2_dst_from_d1.ptr) + d_evenPsis[2].slicePitch * 0;
 
-	odd_d0_src.ptr = ((char*)odd_d0_src.ptr) + d_oddPsi_d0.slicePitch * (dzsize_d0 - 2);
-	odd_d0_dst.ptr = ((char*)odd_d0_dst.ptr) + d_oddPsi_d0.slicePitch * (dzsize_d0 - 1);
-	odd_d1_src.ptr = ((char*)odd_d1_src.ptr) + d_oddPsi_d1.slicePitch * 1;
-	odd_d1_dst.ptr = ((char*)odd_d1_dst.ptr) + d_oddPsi_d1.slicePitch * 0;
+	odd_d0_src.ptr = ((char*)odd_d0_src.ptr) + d_oddPsis[0].slicePitch * (dzSizes[0] - 2);
+	odd_d0_dst.ptr = ((char*)odd_d0_dst.ptr) + d_oddPsis[0].slicePitch * (dzSizes[0] - 1);
+	odd_d1_src.ptr = ((char*)odd_d1_src.ptr) + d_oddPsis[1].slicePitch * 1;
+	odd_d1_dst.ptr = ((char*)odd_d1_dst.ptr) + d_oddPsis[1].slicePitch * 0;
+	odd_d2_src.ptr = ((char*)odd_d2_src.ptr) + d_oddPsis[2].slicePitch * (dzSizes[2] - 2);
+	odd_d2_dst.ptr = ((char*)odd_d2_dst.ptr) + d_oddPsis[2].slicePitch * (dzSizes[2] - 1);
+	odd_d3_src.ptr = ((char*)odd_d3_src.ptr) + d_oddPsis[3].slicePitch * 1;
+	odd_d3_dst.ptr = ((char*)odd_d3_dst.ptr) + d_oddPsis[3].slicePitch * 0;
+	
+	odd_d1_src_to_d2.ptr = ((char*)odd_d1_src_to_d2.ptr) + d_oddPsis[1].slicePitch * (dzSizes[1] - 2);
+	odd_d1_dst_from_d2.ptr = ((char*)odd_d1_dst_from_d2.ptr) + d_oddPsis[1].slicePitch * (dzSizes[1] - 1);
+	odd_d2_src_to_d1.ptr = ((char*)odd_d2_src_to_d1.ptr) + d_oddPsis[2].slicePitch * 1;
+	odd_d2_dst_from_d1.ptr = ((char*)odd_d2_dst_from_d1.ptr) + d_oddPsis[2].slicePitch * 0;
 
 	even_d0_to_d1.srcPtr = even_d0_src;
 	even_d0_to_d1.dstPtr = even_d1_dst;
 	even_d0_to_d1.extent = oneSliceExtent;
 	even_d0_to_d1.kind = cudaMemcpyDefault;
-
 	even_d1_to_d0.srcPtr = even_d1_src;
 	even_d1_to_d0.dstPtr = even_d0_dst;
 	even_d1_to_d0.extent = oneSliceExtent;
 	even_d1_to_d0.kind = cudaMemcpyDefault;
+	even_d2_to_d3.srcPtr = even_d2_src;
+	even_d2_to_d3.dstPtr = even_d3_dst;
+	even_d2_to_d3.extent = oneSliceExtent;
+	even_d2_to_d3.kind = cudaMemcpyDefault;
+	even_d3_to_d2.srcPtr = even_d3_src;
+	even_d3_to_d2.dstPtr = even_d2_dst;
+	even_d3_to_d2.extent = oneSliceExtent;
+	even_d3_to_d2.kind = cudaMemcpyDefault;
+	
+	even_d1_to_d2.srcPtr = even_d1_src_to_d2;
+	even_d1_to_d2.dstPtr = even_d2_dst_from_d1;
+	even_d1_to_d2.extent = oneSliceExtent;
+	even_d1_to_d2.kind = cudaMemcpyDefault;
+	
+	even_d2_to_d1.srcPtr = even_d2_src_to_d1;
+	even_d2_to_d1.dstPtr = even_d1_dst_from_d2;
+	even_d2_to_d1.extent = oneSliceExtent;
+	even_d2_to_d1.kind = cudaMemcpyDefault;
 
 	odd_d0_to_d1.srcPtr = odd_d0_src;
 	odd_d0_to_d1.dstPtr = odd_d1_dst;
 	odd_d0_to_d1.extent = oneSliceExtent;
 	odd_d0_to_d1.kind = cudaMemcpyDefault;
-
 	odd_d1_to_d0.srcPtr = odd_d1_src;
 	odd_d1_to_d0.dstPtr = odd_d0_dst;
 	odd_d1_to_d0.extent = oneSliceExtent;
 	odd_d1_to_d0.kind = cudaMemcpyDefault;
+	odd_d2_to_d3.srcPtr = odd_d2_src;
+	odd_d2_to_d3.dstPtr = odd_d3_dst;
+	odd_d2_to_d3.extent = oneSliceExtent;
+	odd_d2_to_d3.kind = cudaMemcpyDefault;
+	odd_d3_to_d2.srcPtr = odd_d3_src;
+	odd_d3_to_d2.dstPtr = odd_d2_dst;
+	odd_d3_to_d2.extent = oneSliceExtent;
+	odd_d3_to_d2.kind = cudaMemcpyDefault;
+
+	odd_d1_to_d2.srcPtr = odd_d1_src_to_d2;
+	odd_d1_to_d2.dstPtr = odd_d2_dst_from_d1;
+	odd_d1_to_d2.extent = oneSliceExtent;
+	odd_d1_to_d2.kind = cudaMemcpyDefault;
+	
+	odd_d2_to_d1.srcPtr = odd_d2_src_to_d1	;
+	odd_d2_to_d1.dstPtr = odd_d1_dst_from_d2;
+	odd_d2_to_d1.extent = oneSliceExtent;
+	odd_d2_to_d1.kind = cudaMemcpyDefault;
+
+	//std::cout << "block dim = " << dimBlock.x << ", " << dimBlock.y << ", "<< dimBlock.z << std::endl;
+	//std::cout << "grid dim = " << dimGrid.x << ", " << dimGrid.y << ", "<< dimGrid.z << std::endl;
+
+	cudaStream_t stream0_d0;
+	
+	cudaStream_t stream0_d1;
+	cudaStream_t stream1_d1;
+	
+	cudaStream_t stream0_d2;
+	cudaStream_t stream1_d2;
+	
+	cudaStream_t stream0_d3;
+	
+	cudaEvent_t event_d0_to_d1;
+	
+	cudaEvent_t event_d1_to_d0;
+	cudaEvent_t event_d1_to_d2;
+	cudaEvent_t event_d1_kernel;
+	
+	cudaEvent_t event_d2_to_d1;
+	cudaEvent_t event_d2_to_d3;
+	cudaEvent_t event_d2_kernel;
+	
+	cudaEvent_t event_d3_to_d2;
+	
+	cudaSetDevice(0);
+	cudaStreamCreate(&stream0_d0);
+	cudaEventCreate(&event_d0_to_d1);
+	cudaEventRecord(event_d0_to_d1, stream0_d0);
+	
+	cudaSetDevice(1);
+	cudaStreamCreate(&stream0_d1);
+	cudaEventCreate(&event_d1_to_d0);
+	cudaEventRecord(event_d1_to_d0, stream0_d1);
+	cudaStreamCreate(&stream1_d1);
+	cudaEventCreate(&event_d1_to_d2);
+	cudaEventRecord(event_d1_to_d2, stream1_d1);
+	cudaEventCreate(&event_d1_kernel);
+	
+	cudaSetDevice(2);
+	cudaStreamCreate(&stream0_d2);
+	cudaEventCreate(&event_d2_to_d1);
+	cudaEventRecord(event_d2_to_d1, stream0_d2);
+	cudaStreamCreate(&stream1_d2);
+	cudaEventCreate(&event_d2_to_d3);
+	cudaEventRecord(event_d2_to_d3, stream1_d2);
+	cudaEventCreate(&event_d2_kernel);
+	
+	cudaSetDevice(3);
+	cudaStreamCreate(&stream0_d3);
+	cudaEventCreate(&event_d3_to_d2);
+	cudaEventRecord(event_d3_to_d2, stream0_d3);
+
+	d_cudaEvenPsis[0].ptr = ((char*)d_cudaEvenPsis[0].ptr) + d_evenPsis[0].slicePitch;
+	h_cudaEvenPsis[0].ptr = ((BlockPsis*)h_cudaEvenPsis[0].ptr) + dxsize * dysize;
+	psiExtents[0].depth -= 2;
 
 #if SAVE_PICTURE || SAVE_VOLUME
-	// Copy back from device memory to host memory
 	cudaMemcpy3DParms evenPsiBackParams_d0 = {0};
-	evenPsiBackParams_d0.srcPtr = d_cudaEvenPsi_d0;
-	evenPsiBackParams_d0.dstPtr = h_cudaEvenPsi_d0;
-	evenPsiBackParams_d0.extent = psiExtent_d0;
+	evenPsiBackParams_d0.srcPtr = d_cudaEvenPsis[0];
+	evenPsiBackParams_d0.dstPtr = h_cudaEvenPsis[0];
+	evenPsiBackParams_d0.extent = psiExtents[0];
 	evenPsiBackParams_d0.kind = cudaMemcpyDeviceToHost;
-
+	
+	d_cudaEvenPsis[1].ptr = ((char*)d_cudaEvenPsis[1].ptr) + d_evenPsis[1].slicePitch;
+	h_cudaEvenPsis[1].ptr = ((BlockPsis*)h_cudaEvenPsis[1].ptr) + dxsize * dysize;
+	psiExtents[1].depth -= 2;
+	
 	cudaMemcpy3DParms evenPsiBackParams_d1 = {0};
-	evenPsiBackParams_d1.srcPtr = d_cudaEvenPsi_d1;
-	evenPsiBackParams_d1.dstPtr = h_cudaEvenPsi_d1;
-	evenPsiBackParams_d1.extent = psiExtent_d1;
+	evenPsiBackParams_d1.srcPtr = d_cudaEvenPsis[1];
+	evenPsiBackParams_d1.dstPtr = h_cudaEvenPsis[1];
+	evenPsiBackParams_d1.extent = psiExtents[1];
 	evenPsiBackParams_d1.kind = cudaMemcpyDeviceToHost;
+	
+	d_cudaEvenPsis[2].ptr = ((char*)d_cudaEvenPsis[2].ptr) + d_evenPsis[2].slicePitch;
+	h_cudaEvenPsis[2].ptr = ((BlockPsis*)h_cudaEvenPsis[2].ptr) + dxsize * dysize;
+	psiExtents[2].depth -= 2;
+	
+	cudaMemcpy3DParms evenPsiBackParams_d2 = {0};
+	evenPsiBackParams_d2.srcPtr = d_cudaEvenPsis[2];
+	evenPsiBackParams_d2.dstPtr = h_cudaEvenPsis[2];
+	evenPsiBackParams_d2.extent = psiExtents[2];
+	evenPsiBackParams_d2.kind = cudaMemcpyDeviceToHost;
+	
+	d_cudaEvenPsis[3].ptr = ((char*)d_cudaEvenPsis[3].ptr) + d_evenPsis[3].slicePitch;
+	h_cudaEvenPsis[3].ptr = ((BlockPsis*)h_cudaEvenPsis[3].ptr) + dxsize * dysize;
+	psiExtents[3].depth -= 2;
+	
+	cudaMemcpy3DParms evenPsiBackParams_d3 = {0};
+	evenPsiBackParams_d3.srcPtr = d_cudaEvenPsis[3];
+	evenPsiBackParams_d3.dstPtr = h_cudaEvenPsis[3];
+	evenPsiBackParams_d3.extent = psiExtents[3];
+	evenPsiBackParams_d3.kind = cudaMemcpyDeviceToHost;
 #endif
 	const uint time0 = clock();
 	while(true)
@@ -578,7 +727,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			}
 		}
 		std::ostringstream picpath;
-		picpath << "kuva" << iter << ".bmp";
+		picpath << "tulokset/kuva" << iter << ".bmp";
 		pic.save(picpath.str(), false);
 #endif
 
@@ -618,30 +767,91 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 		{
 			// update odd values
 			cudaSetDevice(0);
-			update<<<dimGrid_d0, dimBlock>>>(d_oddPsi_d0, d_evenPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensions_d0);
+			cudaStreamWaitEvent(stream0_d0, event_d1_to_d0, 0);
+			update<<<dimGrid_d0, dimBlock, 0, stream0_d0>>>(d_oddPsis[0], d_evenPsis[0], d_pots[0], d_lapinds[0], lapfacs, g, dimensions_d0);
 			cudaSetDevice(1);
-			update<<<dimGrid_d1, dimBlock>>>(d_oddPsi_d1, d_evenPsi_d1, d_pot_d1, d_lapind_d1, lapfacs, g, dimensions_d1);
+			cudaStreamWaitEvent(stream0_d1, event_d0_to_d1, 0);
+			cudaStreamWaitEvent(stream0_d1, event_d2_to_d1, 0);
+			update<<<dimGrid_d1, dimBlock, 0, stream0_d1>>>(d_oddPsis[1], d_evenPsis[1], d_pots[1], d_lapinds[1], lapfacs, g, dimensions_d1);
+			cudaEventRecord(event_d1_kernel, stream0_d1);
+			cudaSetDevice(2);
+			cudaStreamWaitEvent(stream0_d2, event_d1_to_d2, 0);
+			cudaStreamWaitEvent(stream0_d2, event_d3_to_d2, 0);
+			update<<<dimGrid_d2, dimBlock, 0, stream0_d2>>>(d_oddPsis[2], d_evenPsis[2], d_pots[2], d_lapinds[2], lapfacs, g, dimensions_d2);
+			cudaEventRecord(event_d2_kernel, stream0_d2);
+			cudaSetDevice(3);
+			cudaStreamWaitEvent(stream0_d3, event_d2_to_d3, 0);
+			update<<<dimGrid_d3, dimBlock, 0, stream0_d3>>>(d_oddPsis[3], d_evenPsis[3], d_pots[3], d_lapinds[3], lapfacs, g, dimensions_d3);
 
-			checkCudaErrors(cudaMemcpy3DAsync(&odd_d0_to_d1));
 			cudaSetDevice(0);
-			checkCudaErrors(cudaMemcpy3DAsync(&odd_d1_to_d0));
+			cudaMemcpy3DAsync(&odd_d0_to_d1, stream0_d0);
+			cudaEventRecord(event_d0_to_d1, stream0_d0);
+			cudaSetDevice(1);
+			cudaMemcpy3DAsync(&odd_d1_to_d0, stream0_d1);
+			cudaEventRecord(event_d1_to_d0, stream0_d1);
+			cudaStreamWaitEvent(stream1_d1, event_d1_kernel, 0);
+			cudaMemcpy3DAsync(&odd_d1_to_d2, stream1_d1);
+			cudaEventRecord(event_d1_to_d2, stream1_d1);
+			cudaSetDevice(2);
+			cudaMemcpy3DAsync(&odd_d2_to_d3, stream0_d2);
+			cudaEventRecord(event_d2_to_d3, stream0_d2);
+			cudaStreamWaitEvent(stream1_d2, event_d2_kernel, 0);
+			cudaMemcpy3DAsync(&odd_d2_to_d1, stream1_d2);
+			cudaEventRecord(event_d2_to_d1, stream1_d2);
+			cudaSetDevice(3);
+			cudaMemcpy3DAsync(&odd_d3_to_d2, stream0_d3);
+			cudaEventRecord(event_d3_to_d2, stream0_d3);
 
 			// update even values
 			cudaSetDevice(0);
-			update<<<dimGrid_d0, dimBlock>>>(d_evenPsi_d0, d_oddPsi_d0, d_pot_d0, d_lapind_d0, lapfacs, g, dimensions_d0);
+			cudaStreamWaitEvent(stream0_d0, event_d1_to_d0, 0);
+			update<<<dimGrid_d0, dimBlock, 0, stream0_d0>>>(d_evenPsis[0], d_oddPsis[0], d_pots[0], d_lapinds[0], lapfacs, g, dimensions_d0);
 			cudaSetDevice(1);
-			update<<<dimGrid_d1, dimBlock>>>(d_evenPsi_d1, d_oddPsi_d1, d_pot_d1, d_lapind_d1, lapfacs, g, dimensions_d1);
+			cudaStreamWaitEvent(stream0_d1, event_d0_to_d1, 0);
+			cudaStreamWaitEvent(stream0_d1, event_d2_to_d1, 0);
+			update<<<dimGrid_d1, dimBlock, 0, stream0_d1>>>(d_evenPsis[1], d_oddPsis[1], d_pots[1], d_lapinds[1], lapfacs, g, dimensions_d1);
+			cudaEventRecord(event_d1_kernel, stream0_d1);
+			cudaSetDevice(2);
+			cudaStreamWaitEvent(stream0_d2, event_d1_to_d2, 0);
+			cudaStreamWaitEvent(stream0_d2, event_d3_to_d2, 0);
+			update<<<dimGrid_d2, dimBlock, 0, stream0_d2>>>(d_evenPsis[2], d_oddPsis[2], d_pots[2], d_lapinds[2], lapfacs, g, dimensions_d2);
+			cudaEventRecord(event_d2_kernel, stream0_d2);
+			cudaSetDevice(3);
+			cudaStreamWaitEvent(stream0_d3, event_d2_to_d3, 0);
+			update<<<dimGrid_d3, dimBlock, 0, stream0_d3>>>(d_evenPsis[3], d_oddPsis[3], d_pots[3], d_lapinds[3], lapfacs, g, dimensions_d3);
 
-			checkCudaErrors(cudaMemcpy3DAsync(&even_d0_to_d1));
 			cudaSetDevice(0);
-			checkCudaErrors(cudaMemcpy3DAsync(&even_d1_to_d0));
+			cudaMemcpy3DAsync(&even_d0_to_d1, stream0_d0);
+			cudaEventRecord(event_d0_to_d1, stream0_d0);
+			cudaSetDevice(1);
+			cudaMemcpy3DAsync(&even_d1_to_d0, stream0_d1);
+			cudaEventRecord(event_d1_to_d0, stream0_d1);
+			cudaStreamWaitEvent(stream1_d1, event_d1_kernel, 0);
+			cudaMemcpy3DAsync(&even_d1_to_d2, stream1_d1);
+			cudaEventRecord(event_d1_to_d2, stream1_d1);
+			cudaSetDevice(2);
+			cudaMemcpy3DAsync(&even_d2_to_d3, stream0_d2);
+			cudaEventRecord(event_d2_to_d3, stream0_d2);
+			cudaStreamWaitEvent(stream1_d2, event_d2_kernel, 0);
+			cudaMemcpy3DAsync(&even_d2_to_d1, stream1_d2);
+			cudaEventRecord(event_d2_to_d1, stream1_d2);
+			cudaSetDevice(3);
+			cudaMemcpy3DAsync(&even_d3_to_d2, stream0_d3);
+			cudaEventRecord(event_d3_to_d2, stream0_d3);			
 		}
 #if SAVE_PICTURE || SAVE_VOLUME
+		// Copy back from device memory to host memory
 		cudaSetDevice(0);
 		checkCudaErrors(cudaMemcpy3DAsync(&evenPsiBackParams_d0));
 
 		cudaSetDevice(1);
 		checkCudaErrors(cudaMemcpy3DAsync(&evenPsiBackParams_d1));
+		
+		cudaSetDevice(2);
+		checkCudaErrors(cudaMemcpy3DAsync(&evenPsiBackParams_d2));
+
+		cudaSetDevice(3);
+		checkCudaErrors(cudaMemcpy3DAsync(&evenPsiBackParams_d3));
 #endif
 	}
 	std::cout << "iteration time = " << (1e-6 * (clock() - time0)) / number_of_iterations << std::endl;
@@ -693,14 +903,13 @@ int main ( int argc, char** argv )
 	//std::cout << "maxf=" << state.searchFunctionMax() << std::endl;
 #endif
 
-	const int number_of_iterations = 50;
+	const int number_of_iterations = 5;
 	const ddouble iteration_period = 1.0;
 	const ddouble block_scale = PIx2 / (20.0 * sqrt(state.integrateCurvature()));
 	
-	std::cout << "2 GPUs version" << std::endl;
+	std::cout << "4 GPUs version pasimysiini" << std::endl;
 	std::cout << "kappa = " << KAPPA << std::endl;
 	std::cout << "g = " << G << std::endl;
-	std::cout << "ranks = 576" << std::endl;
 	std::cout << "block_scale = " << block_scale << std::endl;
 	std::cout << "iteration_period = " << iteration_period << std::endl;
 	std::cout << "maxr = " << maxr << std::endl;

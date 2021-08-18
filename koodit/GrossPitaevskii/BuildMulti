@@ -1,0 +1,1 @@
+nvcc -O3 -o MultiGpu -Wno-deprecated-gpu-targets -Xcompiler -Wno-vla GPUGrossPitaevskii_BCC_multi.cu VortexState.cpp ../../jukan_koodit/Mesh/DelaunayMesh.cpp ../../jukan_koodit/Mesh/BuilderMesh.cpp ../../jukan_koodit/Mesh/Mesh.cpp ../../jukan_koodit/Output/Text.cpp ../../jukan_koodit/Output/Picture.cpp ../../jukan_koodit/Types/Random.cpp
