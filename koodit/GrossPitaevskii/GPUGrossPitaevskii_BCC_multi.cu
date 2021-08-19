@@ -32,38 +32,38 @@ ddouble potentialRZ(const ddouble r, const ddouble z)
 	return 0.5 * (r * r + RATIO * RATIO * z * z);
 }
 
-ddouble potentialV3(const Vector3 &p)
+ddouble potentialV3(const Vector3& p)
 {
 	return 0.5 * (p.x * p.x + p.y * p.y + RATIO * RATIO * p.z * p.z);
 }
 
-bool saveVolumeMap(const std::string &path, const Buffer<ushort> &vol, const uint xsize, const uint ysize, const uint zsize, const Vector3 &h)
+bool saveVolumeMap(const std::string& path, const Buffer<ushort>& vol, const uint xsize, const uint ysize, const uint zsize, const Vector3& h)
 {
 	Text rawpath;
 	rawpath << path << ".raw";
 
 	// save raw
 	std::ofstream fs(rawpath.str().c_str(), std::ios_base::binary | std::ios::trunc);
-	if(fs.fail()) return false;
+	if (fs.fail()) return false;
 	fs.write((char*)&vol[0], 2 * xsize * ysize * zsize);
 	fs.close();
 
 	// save header
 	Text text;
 
-	text <<	"ObjectType              = Image" << std::endl;
-	text <<	"NDims                   = 3" << std::endl;
-	text <<	"BinaryData              = True" << std::endl;
-	text <<	"CompressedData          = False" << std::endl;
-	text <<	"BinaryDataByteOrderMSB  = False" << std::endl;
-	text <<	"TransformMatrix         = 1 0 0 0 1 0 0 0 1" << std::endl;
-	text <<	"Offset                  = " << -0.5 * xsize * h.x << " " << -0.5 * ysize * h.y << " " << -0.5 * zsize * h.z << std::endl;
-	text <<	"CenterOfRotation        = 0 0 0" << std::endl;
-	text <<	"DimSize                 = " << xsize << " " << ysize << " " << zsize << std::endl;
-	text <<	"ElementSpacing          = " << h.x << " " << h.y << " " << h.z << std::endl;
-	text <<	"ElementNumberOfChannels = 1" << std::endl;
-	text <<	"ElementType             = MET_USHORT" << std::endl;
-	text <<	"ElementDataFile         = " << rawpath.str() << std::endl;
+	text << "ObjectType              = Image" << std::endl;
+	text << "NDims                   = 3" << std::endl;
+	text << "BinaryData              = True" << std::endl;
+	text << "CompressedData          = False" << std::endl;
+	text << "BinaryDataByteOrderMSB  = False" << std::endl;
+	text << "TransformMatrix         = 1 0 0 0 1 0 0 0 1" << std::endl;
+	text << "Offset                  = " << -0.5 * xsize * h.x << " " << -0.5 * ysize * h.y << " " << -0.5 * zsize * h.z << std::endl;
+	text << "CenterOfRotation        = 0 0 0" << std::endl;
+	text << "DimSize                 = " << xsize << " " << ysize << " " << zsize << std::endl;
+	text << "ElementSpacing          = " << h.x << " " << h.y << " " << h.z << std::endl;
+	text << "ElementNumberOfChannels = 1" << std::endl;
+	text << "ElementType             = MET_USHORT" << std::endl;
+	text << "ElementDataFile         = " << rawpath.str() << std::endl;
 	text.save(path);
 	return true;
 }
@@ -72,7 +72,7 @@ bool saveVolumeMap(const std::string &path, const Buffer<ushort> &vol, const uin
 const Vector3 BLOCK_WIDTH = sqrt(8.0) * Vector3(1, 1, 1); // dimensions of unit block
 const ddouble VOLUME = sqrt(32.0 / 9.0); // volume of body elements
 const bool IS_3D = true; // 3-dimensional
-void getPositions(Buffer<Vector3> &pos)
+void getPositions(Buffer<Vector3>& pos)
 {
 	pos.resize(12);
 	const ddouble SQ1_8 = 1.0 / sqrt(8.0);
@@ -89,76 +89,76 @@ void getPositions(Buffer<Vector3> &pos)
 	pos[10] = SQ1_8 * Vector3(3, 5, 7);
 	pos[11] = SQ1_8 * Vector3(5, 3, 7);
 }
-ddouble getLaplacian(Buffer<int2> &ind, const int nx, const int ny, const int nz) // nx, ny, nz in bytes
+ddouble getLaplacian(Buffer<int2>& ind, const int nx, const int ny, const int nz) // nx, ny, nz in bytes
 {
 	ind.resize(48);
-    // Primary faces of the 1. dual node
+	// Primary faces of the 1. dual node
 	ind[0] = make_int2(0, 9);
 	ind[1] = make_int2(0, 10);
 	ind[2] = make_int2(nz - nx, 2);
 	ind[3] = make_int2(-nx, 3);
 
-    // Primary faces of the 2. dual node
+	// Primary faces of the 2. dual node
 	ind[4] = make_int2(0, 2);
 	ind[5] = make_int2(0, 3);
 	ind[6] = make_int2(nx - ny, 5);
 	ind[7] = make_int2(-ny, 8);
 
-    // Primary faces of the 3. dual node
+	// Primary faces of the 3. dual node
 	ind[8] = make_int2(0, 1);
 	ind[9] = make_int2(0, 4);
 	ind[10] = make_int2(-nz + nx, 0);
 	ind[11] = make_int2(-nz, 11);
 
 	// Primary faces of the 4. dual node
-    ind[12] = make_int2(0, 1);
+	ind[12] = make_int2(0, 1);
 	ind[13] = make_int2(0, 4);
 	ind[14] = make_int2(nx, 0);
 	ind[15] = make_int2(0, 11);
 
-    // Primary faces of the 5. dual node
+	// Primary faces of the 5. dual node
 	ind[16] = make_int2(0, 2);
 	ind[17] = make_int2(0, 3);
 	ind[18] = make_int2(nx, 5);
 	ind[19] = make_int2(0, 8);
 
-    // Primary faces of the 6. dual node
+	// Primary faces of the 6. dual node
 	ind[20] = make_int2(0, 6);
 	ind[21] = make_int2(0, 7);
 	ind[22] = make_int2(-nx + ny, 1);
 	ind[23] = make_int2(-nx, 4);
 
-    // Primary faces of the 7. dual node
+	// Primary faces of the 7. dual node
 	ind[24] = make_int2(0, 5);
 	ind[25] = make_int2(0, 8);
 	ind[26] = make_int2(-nz + ny, 9);
 	ind[27] = make_int2(-nz, 10);
 
-    // Primary faces of the 8. dual node
+	// Primary faces of the 8. dual node
 	ind[28] = make_int2(0, 5);
 	ind[29] = make_int2(0, 8);
 	ind[30] = make_int2(ny, 9);
 	ind[31] = make_int2(0, 10);
 
-    // Primary faces of the 9. dual node
+	// Primary faces of the 9. dual node
 	ind[32] = make_int2(0, 6);
 	ind[33] = make_int2(0, 7);
 	ind[34] = make_int2(ny, 1);
 	ind[35] = make_int2(0, 4);
 
-    // Primary faces of the 10. dual node
+	// Primary faces of the 10. dual node
 	ind[36] = make_int2(0, 0);
 	ind[37] = make_int2(0, 11);
 	ind[38] = make_int2(nz - ny, 6);
 	ind[39] = make_int2(-ny, 7);
 
-    // Primary faces of the 11. dual node
+	// Primary faces of the 11. dual node
 	ind[40] = make_int2(0, 0);
 	ind[41] = make_int2(0, 11);
 	ind[42] = make_int2(nz, 6);
 	ind[43] = make_int2(0, 7);
 
-    // Primary faces of the 12. dual node
+	// Primary faces of the 12. dual node
 	ind[44] = make_int2(0, 9);
 	ind[45] = make_int2(0, 10);
 	ind[46] = make_int2(nz, 2);
@@ -169,7 +169,7 @@ ddouble getLaplacian(Buffer<int2> &ind, const int nx, const int ny, const int nz
 
 struct BlockPsis
 {
-	double2 values[VALUES_IN_BLOCK]; 
+	double2 values[VALUES_IN_BLOCK];
 };
 
 struct BlockPots
@@ -187,16 +187,16 @@ struct PitchedPtr
 // Arithmetic operators for cuda vector types
 inline __host__ __device__ double2 operator+(double2 a, double2 b)
 {
-    return make_double2(a.x + b.x, a.y + b.y);
+	return make_double2(a.x + b.x, a.y + b.y);
 }
-inline __host__ __device__ void operator+=(double2 &a, double2 b)
+inline __host__ __device__ void operator+=(double2& a, double2 b)
 {
-    a.x += b.x;
-    a.y += b.y;
+	a.x += b.x;
+	a.y += b.y;
 }
 inline __host__ __device__ double2 operator*(double b, double2 a)
 {
-    return make_double2(b * a.x, b * a.y);
+	return make_double2(b * a.x, b * a.y);
 }
 
 __global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr potentials, int2* lapInd, double2 lapfacs, double g, uint3 dimensions)
@@ -230,8 +230,8 @@ __global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr pote
 	// Update psi
 	size_t dualNodeId = zid % VALUES_IN_BLOCK; // Dual node id. One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
 
-    // 4 primary faces
-    uint face = dualNodeId * FACE_COUNT;
+	// 4 primary faces
+	uint face = dualNodeId * FACE_COUNT;
 	double2 sum =  (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
 	        sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
 	        sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
@@ -244,8 +244,8 @@ __global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr pote
 	(*nextPsi).values[dualNodeId] += make_double2(sum.y, -sum.x);
 };
 
-uint integrateInTime(const VortexState &state, const ddouble block_scale, const Vector3 &minp, const Vector3 &maxp, const ddouble iteration_period, const uint number_of_iterations)
-{	
+uint integrateInTime(const VortexState& state, const ddouble block_scale, const Vector3& minp, const Vector3& maxp, const ddouble iteration_period, const uint number_of_iterations)
+{
 	uint i, j, k, l;
 
 	// find dimensions
@@ -283,24 +283,24 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	std::cout << "bodies = " << xsize * ysize * zsize * bsize << std::endl;
 
 	// initialize stationary state
-	Buffer<Complex> Psi0(vsize, Complex(0,0)); // initial discrete wave function
+	Buffer<Complex> Psi0(vsize, Complex(0, 0)); // initial discrete wave function
 	Buffer<ddouble> pot(vsize, 0.0); // discrete potential multiplied by time step size
 	ddouble g = state.getG(); // effective interaction strength
 	ddouble maxpot = 0.0; // maximal value of potential
-	for(k=0; k<zsize; k++)
+	for (k = 0; k < zsize; k++)
 	{
-		for(j=0; j<ysize; j++)
+		for (j = 0; j < ysize; j++)
 		{
-			for(i=0; i<xsize; i++)
+			for (i = 0; i < xsize; i++)
 			{
-				for(l=0; l<bsize; l++)
+				for (l = 0; l < bsize; l++)
 				{
 					const uint ii = ii0 + k * bxysize + j * bxsize + i * bsize + l;
 					const Vector3 p(p0.x + block_scale * (i * BLOCK_WIDTH.x + bpos[l].x), p0.y + block_scale * (j * BLOCK_WIDTH.y + bpos[l].y), p0.z + block_scale * (k * BLOCK_WIDTH.z + bpos[l].z)); // position
 					Psi0[ii] = state.getPsi(p);
 					pot[ii] = potentialV3(p);
 					const ddouble poti = pot[ii] + g * Psi0[ii].normsq();
-					if(poti > maxpot) maxpot = poti;
+					if (poti > maxpot) maxpot = poti;
 				}
 			}
 		}
@@ -372,6 +372,8 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	PitchedPtr d_pots[GPU_COUNT];
 	int2* d_lapinds[GPU_COUNT];
 	cudaPitchedPtr h_cudaEvenPsis[GPU_COUNT];
+	cudaPitchedPtr h_cudaOddPsis[GPU_COUNT];
+	cudaPitchedPtr h_cudaPots[GPU_COUNT];
 	cudaExtent psiExtents[GPU_COUNT];
 
 	size_t dzSizes[GPU_COUNT];
@@ -400,30 +402,29 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 		d_evenPsis[gpuIdx] = d_evenPsi;
 		d_oddPsis[gpuIdx] = d_oddPsi;
 		d_pots[gpuIdx] = d_pot;
-	
+
 		// find terms for laplacian
 		Buffer<int2> lapind;
-		getLaplacian(lapind, sizeof(BlockPsis), d_evenPsis[gpuIdx].pitch, d_evenPsis[gpuIdx].slicePitch) / (block_scale * block_scale);
+		getLaplacian(lapind, sizeof(BlockPsis), d_evenPsis[gpuIdx].pitch, d_evenPsis[gpuIdx].slicePitch);
 
 		checkCudaErrors(cudaMalloc(&d_lapinds[gpuIdx], lapind.size() * sizeof(int2)));
 
-		cudaPitchedPtr h_cudaOddPsi = { 0 };
-		cudaPitchedPtr h_cudaPot = { 0 };
+		bool first = (gpuIdx == 0);
 
-		h_cudaEvenPsis[gpuIdx].ptr = h_evenPsi + (dxsize * dysize * (dzSizes[gpuIdx] - 2)) * gpuIdx;
+		h_cudaEvenPsis[gpuIdx].ptr = first ? h_evenPsi : ((BlockPsis*)h_cudaEvenPsis[gpuIdx - 1].ptr) + dxsize * dysize * (dzSizes[gpuIdx - 1] - 2);
 		h_cudaEvenPsis[gpuIdx].pitch = dxsize * sizeof(BlockPsis);
 		h_cudaEvenPsis[gpuIdx].xsize = d_cudaEvenPsis[gpuIdx].xsize;
 		h_cudaEvenPsis[gpuIdx].ysize = d_cudaEvenPsis[gpuIdx].ysize;
 
-		h_cudaOddPsi.ptr = h_oddPsi + (dxsize * dysize * (dzSizes[gpuIdx] - 2)) * gpuIdx;
-		h_cudaOddPsi.pitch = dxsize * sizeof(BlockPsis);
-		h_cudaOddPsi.xsize = d_cudaOddPsis[gpuIdx].xsize;
-		h_cudaOddPsi.ysize = d_cudaOddPsis[gpuIdx].ysize;
+		h_cudaOddPsis[gpuIdx].ptr = first ? h_oddPsi : ((BlockPsis*)h_cudaOddPsis[gpuIdx - 1].ptr) + dxsize * dysize * (dzSizes[gpuIdx - 1] - 2);
+		h_cudaOddPsis[gpuIdx].pitch = dxsize * sizeof(BlockPsis);
+		h_cudaOddPsis[gpuIdx].xsize = d_cudaOddPsis[gpuIdx].xsize;
+		h_cudaOddPsis[gpuIdx].ysize = d_cudaOddPsis[gpuIdx].ysize;
 
-		h_cudaPot.ptr = h_pot + (dxsize * dysize * (dzSizes[gpuIdx] - 2)) * gpuIdx;
-		h_cudaPot.pitch = dxsize * sizeof(BlockPots);
-		h_cudaPot.xsize = d_cudaPots[gpuIdx].xsize;
-		h_cudaPot.ysize = d_cudaPots[gpuIdx].ysize;
+		h_cudaPots[gpuIdx].ptr = first ? h_pot : ((BlockPots*)h_cudaPots[gpuIdx - 1].ptr) + dxsize * dysize * (dzSizes[gpuIdx - 1] - 2);
+		h_cudaPots[gpuIdx].pitch = dxsize * sizeof(BlockPots);
+		h_cudaPots[gpuIdx].xsize = d_cudaPots[gpuIdx].xsize;
+		h_cudaPots[gpuIdx].ysize = d_cudaPots[gpuIdx].ysize;
 
 		// Copy from host memory to device memory
 		cudaMemcpy3DParms evenPsiParams = { 0 };
@@ -435,12 +436,12 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 		evenPsiParams.extent = psiExtents[gpuIdx];
 		evenPsiParams.kind = cudaMemcpyHostToDevice;
 
-		oddPsiParams.srcPtr = h_cudaOddPsi;
+		oddPsiParams.srcPtr = h_cudaOddPsis[gpuIdx];
 		oddPsiParams.dstPtr = d_cudaOddPsis[gpuIdx];
 		oddPsiParams.extent = psiExtents[gpuIdx];
 		oddPsiParams.kind = cudaMemcpyHostToDevice;
 
-		potParams.srcPtr = h_cudaPot;
+		potParams.srcPtr = h_cudaPots[gpuIdx];
 		potParams.dstPtr = d_cudaPots[gpuIdx];
 		potParams.extent = potExtent;
 		potParams.kind = cudaMemcpyHostToDevice;
@@ -448,7 +449,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 		checkCudaErrors(cudaMemcpy3DAsync(&evenPsiParams));
 		checkCudaErrors(cudaMemcpy3DAsync(&oddPsiParams));
 		checkCudaErrors(cudaMemcpy3DAsync(&potParams));
-		checkCudaErrors(cudaMemcpyAsync(d_lapinds[gpuIdx], &lapind, lapind.size() * sizeof(int2), cudaMemcpyHostToDevice));
+		checkCudaErrors(cudaMemcpyAsync(d_lapinds[gpuIdx], &lapind[0], lapind.size() * sizeof(int2), cudaMemcpyHostToDevice));
 
 		cudaDeviceSynchronize();
 		lapind.clear();
@@ -473,33 +474,33 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	uint iter = 0;
 	dim3 dimBlock(THREAD_BLOCK_X, THREAD_BLOCK_Y, THREAD_BLOCK_Z * VALUES_IN_BLOCK);
 	dim3 dimGrid_d0((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
-					(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
-					(zSizes[0] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
+		(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
+		(zSizes[0] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
 	dim3 dimGrid_d1((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
-					(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
-					(zSizes[1] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
+		(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
+		(zSizes[1] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
 	dim3 dimGrid_d2((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
-					(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
-					(zSizes[2] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
+		(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
+		(zSizes[2] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
 	dim3 dimGrid_d3((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
-					(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
-					(zSizes[3] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
+		(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
+		(zSizes[3] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
 
 	cudaExtent oneSliceExtent = make_cudaExtent(dxsize * sizeof(BlockPsis), dysize, 1);
-			
-	cudaMemcpy3DParms even_d0_to_d1 = {0};
-	cudaMemcpy3DParms even_d1_to_d0 = {0};
-	cudaMemcpy3DParms even_d1_to_d2 = {0};
-	cudaMemcpy3DParms even_d2_to_d1 = {0};
-	cudaMemcpy3DParms even_d2_to_d3 = {0};
-	cudaMemcpy3DParms even_d3_to_d2 = {0};
-	
-	cudaMemcpy3DParms odd_d0_to_d1 = {0};
-	cudaMemcpy3DParms odd_d1_to_d0 = {0};
-	cudaMemcpy3DParms odd_d1_to_d2 = {0};
-	cudaMemcpy3DParms odd_d2_to_d1 = {0};
-	cudaMemcpy3DParms odd_d2_to_d3 = {0};
-	cudaMemcpy3DParms odd_d3_to_d2 = {0};
+
+	cudaMemcpy3DParms even_d0_to_d1 = { 0 };
+	cudaMemcpy3DParms even_d1_to_d0 = { 0 };
+	cudaMemcpy3DParms even_d1_to_d2 = { 0 };
+	cudaMemcpy3DParms even_d2_to_d1 = { 0 };
+	cudaMemcpy3DParms even_d2_to_d3 = { 0 };
+	cudaMemcpy3DParms even_d3_to_d2 = { 0 };
+
+	cudaMemcpy3DParms odd_d0_to_d1 = { 0 };
+	cudaMemcpy3DParms odd_d1_to_d0 = { 0 };
+	cudaMemcpy3DParms odd_d1_to_d2 = { 0 };
+	cudaMemcpy3DParms odd_d2_to_d1 = { 0 };
+	cudaMemcpy3DParms odd_d2_to_d3 = { 0 };
+	cudaMemcpy3DParms odd_d3_to_d2 = { 0 };
 
 	cudaPitchedPtr even_d0_src = d_cudaEvenPsis[0];
 	cudaPitchedPtr even_d0_dst = d_cudaEvenPsis[0];
@@ -509,7 +510,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	cudaPitchedPtr even_d2_dst = d_cudaEvenPsis[2];
 	cudaPitchedPtr even_d3_src = d_cudaEvenPsis[3];
 	cudaPitchedPtr even_d3_dst = d_cudaEvenPsis[3];
-	
+
 	cudaPitchedPtr even_d1_src_to_d2 = d_cudaEvenPsis[1];
 	cudaPitchedPtr even_d1_dst_from_d2 = d_cudaEvenPsis[1];
 	cudaPitchedPtr even_d2_src_to_d1 = d_cudaEvenPsis[2];
@@ -523,7 +524,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	cudaPitchedPtr odd_d2_dst = d_cudaOddPsis[2];
 	cudaPitchedPtr odd_d3_src = d_cudaOddPsis[3];
 	cudaPitchedPtr odd_d3_dst = d_cudaOddPsis[3];
-	
+
 	cudaPitchedPtr odd_d1_src_to_d2 = d_cudaOddPsis[1];
 	cudaPitchedPtr odd_d1_dst_from_d2 = d_cudaOddPsis[1];
 	cudaPitchedPtr odd_d2_src_to_d1 = d_cudaOddPsis[2];
@@ -537,7 +538,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	even_d2_dst.ptr = ((char*)even_d2_dst.ptr) + d_evenPsis[2].slicePitch * (dzSizes[2] - 1);
 	even_d3_src.ptr = ((char*)even_d3_src.ptr) + d_evenPsis[3].slicePitch * 1;
 	even_d3_dst.ptr = ((char*)even_d3_dst.ptr) + d_evenPsis[3].slicePitch * 0;
-	
+
 	even_d1_src_to_d2.ptr = ((char*)even_d1_src_to_d2.ptr) + d_evenPsis[1].slicePitch * (dzSizes[1] - 2);
 	even_d1_dst_from_d2.ptr = ((char*)even_d1_dst_from_d2.ptr) + d_evenPsis[1].slicePitch * (dzSizes[1] - 1);
 	even_d2_src_to_d1.ptr = ((char*)even_d2_src_to_d1.ptr) + d_evenPsis[2].slicePitch * 1;
@@ -551,7 +552,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	odd_d2_dst.ptr = ((char*)odd_d2_dst.ptr) + d_oddPsis[2].slicePitch * (dzSizes[2] - 1);
 	odd_d3_src.ptr = ((char*)odd_d3_src.ptr) + d_oddPsis[3].slicePitch * 1;
 	odd_d3_dst.ptr = ((char*)odd_d3_dst.ptr) + d_oddPsis[3].slicePitch * 0;
-	
+
 	odd_d1_src_to_d2.ptr = ((char*)odd_d1_src_to_d2.ptr) + d_oddPsis[1].slicePitch * (dzSizes[1] - 2);
 	odd_d1_dst_from_d2.ptr = ((char*)odd_d1_dst_from_d2.ptr) + d_oddPsis[1].slicePitch * (dzSizes[1] - 1);
 	odd_d2_src_to_d1.ptr = ((char*)odd_d2_src_to_d1.ptr) + d_oddPsis[2].slicePitch * 1;
@@ -573,12 +574,12 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	even_d3_to_d2.dstPtr = even_d2_dst;
 	even_d3_to_d2.extent = oneSliceExtent;
 	even_d3_to_d2.kind = cudaMemcpyDefault;
-	
+
 	even_d1_to_d2.srcPtr = even_d1_src_to_d2;
 	even_d1_to_d2.dstPtr = even_d2_dst_from_d1;
 	even_d1_to_d2.extent = oneSliceExtent;
 	even_d1_to_d2.kind = cudaMemcpyDefault;
-	
+
 	even_d2_to_d1.srcPtr = even_d2_src_to_d1;
 	even_d2_to_d1.dstPtr = even_d1_dst_from_d2;
 	even_d2_to_d1.extent = oneSliceExtent;
@@ -605,8 +606,8 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	odd_d1_to_d2.dstPtr = odd_d2_dst_from_d1;
 	odd_d1_to_d2.extent = oneSliceExtent;
 	odd_d1_to_d2.kind = cudaMemcpyDefault;
-	
-	odd_d2_to_d1.srcPtr = odd_d2_src_to_d1	;
+
+	odd_d2_to_d1.srcPtr = odd_d2_src_to_d1;
 	odd_d2_to_d1.dstPtr = odd_d1_dst_from_d2;
 	odd_d2_to_d1.extent = oneSliceExtent;
 	odd_d2_to_d1.kind = cudaMemcpyDefault;
@@ -615,32 +616,32 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	//std::cout << "grid dim = " << dimGrid.x << ", " << dimGrid.y << ", "<< dimGrid.z << std::endl;
 
 	cudaStream_t stream0_d0;
-	
+
 	cudaStream_t stream0_d1;
 	cudaStream_t stream1_d1;
-	
+
 	cudaStream_t stream0_d2;
 	cudaStream_t stream1_d2;
-	
+
 	cudaStream_t stream0_d3;
-	
+
 	cudaEvent_t event_d0_to_d1;
-	
+
 	cudaEvent_t event_d1_to_d0;
 	cudaEvent_t event_d1_to_d2;
 	cudaEvent_t event_d1_kernel;
-	
+
 	cudaEvent_t event_d2_to_d1;
 	cudaEvent_t event_d2_to_d3;
 	cudaEvent_t event_d2_kernel;
-	
+
 	cudaEvent_t event_d3_to_d2;
-	
+
 	cudaSetDevice(0);
 	cudaStreamCreate(&stream0_d0);
 	cudaEventCreate(&event_d0_to_d1);
 	cudaEventRecord(event_d0_to_d1, stream0_d0);
-	
+
 	cudaSetDevice(1);
 	cudaStreamCreate(&stream0_d1);
 	cudaEventCreate(&event_d1_to_d0);
@@ -649,7 +650,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	cudaEventCreate(&event_d1_to_d2);
 	cudaEventRecord(event_d1_to_d2, stream1_d1);
 	cudaEventCreate(&event_d1_kernel);
-	
+
 	cudaSetDevice(2);
 	cudaStreamCreate(&stream0_d2);
 	cudaEventCreate(&event_d2_to_d1);
@@ -658,7 +659,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	cudaEventCreate(&event_d2_to_d3);
 	cudaEventRecord(event_d2_to_d3, stream1_d2);
 	cudaEventCreate(&event_d2_kernel);
-	
+
 	cudaSetDevice(3);
 	cudaStreamCreate(&stream0_d3);
 	cudaEventCreate(&event_d3_to_d2);
@@ -669,44 +670,44 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	psiExtents[0].depth -= 2;
 
 #if SAVE_PICTURE || SAVE_VOLUME
-	cudaMemcpy3DParms evenPsiBackParams_d0 = {0};
+	cudaMemcpy3DParms evenPsiBackParams_d0 = { 0 };
 	evenPsiBackParams_d0.srcPtr = d_cudaEvenPsis[0];
 	evenPsiBackParams_d0.dstPtr = h_cudaEvenPsis[0];
 	evenPsiBackParams_d0.extent = psiExtents[0];
 	evenPsiBackParams_d0.kind = cudaMemcpyDeviceToHost;
-	
+
 	d_cudaEvenPsis[1].ptr = ((char*)d_cudaEvenPsis[1].ptr) + d_evenPsis[1].slicePitch;
 	h_cudaEvenPsis[1].ptr = ((BlockPsis*)h_cudaEvenPsis[1].ptr) + dxsize * dysize;
 	psiExtents[1].depth -= 2;
-	
-	cudaMemcpy3DParms evenPsiBackParams_d1 = {0};
+
+	cudaMemcpy3DParms evenPsiBackParams_d1 = { 0 };
 	evenPsiBackParams_d1.srcPtr = d_cudaEvenPsis[1];
 	evenPsiBackParams_d1.dstPtr = h_cudaEvenPsis[1];
 	evenPsiBackParams_d1.extent = psiExtents[1];
 	evenPsiBackParams_d1.kind = cudaMemcpyDeviceToHost;
-	
+
 	d_cudaEvenPsis[2].ptr = ((char*)d_cudaEvenPsis[2].ptr) + d_evenPsis[2].slicePitch;
 	h_cudaEvenPsis[2].ptr = ((BlockPsis*)h_cudaEvenPsis[2].ptr) + dxsize * dysize;
 	psiExtents[2].depth -= 2;
-	
-	cudaMemcpy3DParms evenPsiBackParams_d2 = {0};
+
+	cudaMemcpy3DParms evenPsiBackParams_d2 = { 0 };
 	evenPsiBackParams_d2.srcPtr = d_cudaEvenPsis[2];
 	evenPsiBackParams_d2.dstPtr = h_cudaEvenPsis[2];
 	evenPsiBackParams_d2.extent = psiExtents[2];
 	evenPsiBackParams_d2.kind = cudaMemcpyDeviceToHost;
-	
+
 	d_cudaEvenPsis[3].ptr = ((char*)d_cudaEvenPsis[3].ptr) + d_evenPsis[3].slicePitch;
 	h_cudaEvenPsis[3].ptr = ((BlockPsis*)h_cudaEvenPsis[3].ptr) + dxsize * dysize;
 	psiExtents[3].depth -= 2;
-	
-	cudaMemcpy3DParms evenPsiBackParams_d3 = {0};
+
+	cudaMemcpy3DParms evenPsiBackParams_d3 = { 0 };
 	evenPsiBackParams_d3.srcPtr = d_cudaEvenPsis[3];
 	evenPsiBackParams_d3.dstPtr = h_cudaEvenPsis[3];
 	evenPsiBackParams_d3.extent = psiExtents[3];
 	evenPsiBackParams_d3.kind = cudaMemcpyDeviceToHost;
 #endif
 	const uint time0 = clock();
-	while(true)
+	while (true)
 	{
 #if SAVE_PICTURE || SAVE_VOLUME
 		//cudaDeviceSynchronize();
@@ -716,12 +717,12 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 		// draw picture
 		Picture pic(dxsize, dysize);
 		k = zsize / 2 + 1;
-		for(j=0; j<dysize; j++)
+		for (j = 0; j < dysize; j++)
 		{
-			for(i=0; i<dxsize; i++)
+			for (i = 0; i < dxsize; i++)
 			{
 				const uint idx = k * dxsize * dysize + j * dxsize + i;
-				double norm = sqrt(h_evenPsi[idx].values[0].x*h_evenPsi[idx].values[0].x + h_evenPsi[idx].values[0].y*h_evenPsi[idx].values[0].y);
+				double norm = sqrt(h_evenPsi[idx].values[0].x * h_evenPsi[idx].values[0].x + h_evenPsi[idx].values[0].y * h_evenPsi[idx].values[0].y);
 
 				pic.setColor(i, j, 5.0 * Vector4(h_evenPsi[idx].values[0].x, norm, h_evenPsi[idx].values[0].y, 1.0));
 			}
@@ -736,17 +737,17 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 		const ddouble fmax = state.searchFunctionMax();
 		const ddouble unit = 60000.0 / (bsize * fmax * fmax);
 		Buffer<ushort> vol(dxsize * dysize * (zsize + 2));
-		for(k=0; k<(zsize + 2); k++)
+		for (k = 0; k < (zsize + 2); k++)
 		{
-			for(j=0; j<dysize; j++)
+			for (j = 0; j < dysize; j++)
 			{
-				for(i=0; i<dxsize; i++)
+				for (i = 0; i < dxsize; i++)
 				{
 					const uint idx = k * dxsize * dysize + j * dxsize + i;
 					ddouble sum = 0.0;
-					for(l=0; l<bsize; l++) 
+					for (l = 0; l < bsize; l++)
 					{
-						sum += h_evenPsi[idx].values[0].x*h_evenPsi[idx].values[0].x + h_evenPsi[idx].values[0].y*h_evenPsi[idx].values[0].y;
+						sum += h_evenPsi[idx].values[0].x * h_evenPsi[idx].values[0].x + h_evenPsi[idx].values[0].y * h_evenPsi[idx].values[0].y;
 					}
 					sum *= unit;
 					vol[idx] = (sum > 65535.0 ? 65535 : ushort(sum));
@@ -759,11 +760,11 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 #endif
 
 		// finish iteration
-		if(++iter > number_of_iterations) break;
+		if (++iter > number_of_iterations) break;
 
 		// integrate one iteration
 		std::cout << "Iteration " << iter << std::endl;
-		for(uint step=0; step<steps_per_iteration; step++)
+		for (uint step = 0; step < steps_per_iteration; step++)
 		{
 			// update odd values
 			cudaSetDevice(0);
@@ -837,7 +838,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 			cudaEventRecord(event_d2_to_d1, stream1_d2);
 			cudaSetDevice(3);
 			cudaMemcpy3DAsync(&even_d3_to_d2, stream0_d3);
-			cudaEventRecord(event_d3_to_d2, stream0_d3);			
+			cudaEventRecord(event_d3_to_d2, stream0_d3);
 		}
 #if SAVE_PICTURE || SAVE_VOLUME
 		// Copy back from device memory to host memory
@@ -846,7 +847,7 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 
 		cudaSetDevice(1);
 		checkCudaErrors(cudaMemcpy3DAsync(&evenPsiBackParams_d1));
-		
+
 		cudaSetDevice(2);
 		checkCudaErrors(cudaMemcpy3DAsync(&evenPsiBackParams_d2));
 
@@ -865,9 +866,9 @@ uint integrateInTime(const VortexState &state, const ddouble block_scale, const 
 	}
 
 	return 0;
-}    
+}
 
-int main ( int argc, char** argv )
+int main(int argc, char** argv)
 {
 #if LOAD_STATE_FROM_DISK
 	VortexState state;
@@ -880,7 +881,7 @@ int main ( int argc, char** argv )
 	VortexState state0;
 	state0.setKappa(KAPPA);
 	state0.setG(G);
-	if(IS_3D) state0.setRange(0.0, 15.0, 35.0, 0.2, 0.2); // use this for 3d
+	if (IS_3D) state0.setRange(0.0, 15.0, 35.0, 0.2, 0.2); // use this for 3d
 	else state0.setRange(0.0, 15.0, 1.0, 0.2, 1.0); // use this for 2d
 	state0.iterateSolution(potentialRZ, 10000, 1e-29);
 	const ddouble eps = 1e-5 * state0.searchFunctionMax();
@@ -893,7 +894,7 @@ int main ( int argc, char** argv )
 	VortexState state;
 	state.setKappa(KAPPA);
 	state.setG(G);
-	if(IS_3D) state.setRange(minr, maxr, maxz, 0.03, 0.03); // use this for 3d
+	if (IS_3D) state.setRange(minr, maxr, maxz, 0.03, 0.03); // use this for 3d
 	else state.setRange(minr, maxr, 1.0, 0.03, 1.0); // use this for 2d
 	state.initialize(state0);
 	state.iterateSolution(potentialRZ, 10000, 1e-29);
@@ -906,7 +907,7 @@ int main ( int argc, char** argv )
 	const int number_of_iterations = 5;
 	const ddouble iteration_period = 1.0;
 	const ddouble block_scale = PIx2 / (20.0 * sqrt(state.integrateCurvature()));
-	
+
 	std::cout << "4 GPUs version pasimysiini" << std::endl;
 	std::cout << "kappa = " << KAPPA << std::endl;
 	std::cout << "g = " << G << std::endl;
@@ -916,7 +917,7 @@ int main ( int argc, char** argv )
 	std::cout << "maxz = " << maxz << std::endl;
 
 	// integrate in time using DEC
-	if(IS_3D) integrateInTime(state, block_scale, Vector3(-maxr, -maxr, -maxz), Vector3(maxr, maxr, maxz), iteration_period, number_of_iterations); // use this for 3d
+	if (IS_3D) integrateInTime(state, block_scale, Vector3(-maxr, -maxr, -maxz), Vector3(maxr, maxr, maxz), iteration_period, number_of_iterations); // use this for 3d
 	else integrateInTime(state, block_scale, Vector3(-maxr, -maxr, 0.0), Vector3(maxr, maxr, 0.0), iteration_period, number_of_iterations); // use this for 2d
 
 	return 0;
