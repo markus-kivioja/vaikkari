@@ -14,8 +14,6 @@ ddouble RATIO = 0.1;
 ddouble KAPPA = 20;
 ddouble G = 5000;
 
-#define GPU_COUNT 4
-
 #define LOAD_STATE_FROM_DISK 1
 #define SAVE_PICTURE 0
 #define SAVE_VOLUME 1
@@ -232,10 +230,10 @@ __global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr pote
 
 	// 4 primary faces
 	uint face = dualNodeId * FACE_COUNT;
-	double2 sum =  (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
-	        sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
-	        sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
-	        sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
+	double2 sum = (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
+	sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
+	sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
+	sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
 
 	double2 prev = (*(BlockPsis*)prevPsi).values[dualNodeId];
 	double normsq = prev.x * prev.x + prev.y * prev.y;
@@ -244,7 +242,7 @@ __global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr pote
 	(*nextPsi).values[dualNodeId] += make_double2(sum.y, -sum.x);
 };
 
-uint integrateInTime(const VortexState& state, const ddouble block_scale, const Vector3& minp, const Vector3& maxp, const ddouble iteration_period, const uint number_of_iterations)
+uint integrateInTime(const VortexState& state, const ddouble block_scale, const Vector3& minp, const Vector3& maxp, const ddouble iteration_period, const uint number_of_iterations, uint gpuCount)
 {
 	uint i, j, k, l;
 
@@ -255,11 +253,11 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 	const uint zsize = uint(domain.z / (block_scale * BLOCK_WIDTH.z)) + 1;
 	const Vector3 p0 = 0.5 * (minp + maxp - block_scale * Vector3(BLOCK_WIDTH.x * xsize, BLOCK_WIDTH.y * ysize, BLOCK_WIDTH.z * zsize));
 
-	uint zSizes[GPU_COUNT];
-	uint zRemainder = zsize % GPU_COUNT;
-	for (uint gpuIdx = 0; gpuIdx < GPU_COUNT; ++gpuIdx)
+	std::vector<uint> zSizes(gpuCount);
+	uint zRemainder = zsize % gpuCount;
+	for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
 	{
-		zSizes[gpuIdx] = zsize / GPU_COUNT;
+		zSizes[gpuIdx] = zsize / gpuCount;
 		if (zRemainder)
 		{
 			zSizes[gpuIdx]++;
@@ -364,20 +362,20 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 	}
 
 	// Initialize device memory
-	cudaPitchedPtr d_cudaEvenPsis[GPU_COUNT];
-	cudaPitchedPtr d_cudaOddPsis[GPU_COUNT];
-	cudaPitchedPtr d_cudaPots[GPU_COUNT];
-	PitchedPtr d_evenPsis[GPU_COUNT];
-	PitchedPtr d_oddPsis[GPU_COUNT];
-	PitchedPtr d_pots[GPU_COUNT];
-	int2* d_lapinds[GPU_COUNT];
-	cudaPitchedPtr h_cudaEvenPsis[GPU_COUNT];
-	cudaPitchedPtr h_cudaOddPsis[GPU_COUNT];
-	cudaPitchedPtr h_cudaPots[GPU_COUNT];
-	cudaExtent psiExtents[GPU_COUNT];
+	std::vector<cudaPitchedPtr> d_cudaEvenPsis(gpuCount);
+	std::vector<cudaPitchedPtr> d_cudaOddPsis(gpuCount);
+	std::vector<cudaPitchedPtr> d_cudaPots(gpuCount);
+	std::vector<PitchedPtr> d_evenPsis(gpuCount);
+	std::vector<PitchedPtr> d_oddPsis(gpuCount);
+	std::vector<PitchedPtr> d_pots(gpuCount);
+	std::vector<int2*> d_lapinds(gpuCount);
+	std::vector<cudaPitchedPtr> h_cudaEvenPsis(gpuCount);
+	std::vector<cudaPitchedPtr> h_cudaOddPsis(gpuCount);
+	std::vector<cudaPitchedPtr> h_cudaPots(gpuCount);
+	std::vector<cudaExtent> psiExtents(gpuCount);
 
-	size_t dzSizes[GPU_COUNT];
-	for (uint gpuIdx = 0; gpuIdx < GPU_COUNT; ++gpuIdx)
+	std::vector<size_t> dzSizes(gpuCount);
+	for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
 	{
 		dzSizes[gpuIdx] = zSizes[gpuIdx] + 2;
 
@@ -385,7 +383,7 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 		cudaExtent potExtent = make_cudaExtent(dxsize * sizeof(BlockPots), dysize, dzSizes[gpuIdx]);
 
 		cudaSetDevice(gpuIdx);
-		for (uint peerGpu = 0; peerGpu < GPU_COUNT; ++peerGpu)
+		for (uint peerGpu = 0; peerGpu < gpuCount; ++peerGpu)
 		{
 			cudaDeviceEnablePeerAccess(peerGpu, 0);
 		}
@@ -466,247 +464,105 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 #endif
 
 	// Integrate in time
-	uint3 dimensions_d0 = make_uint3(xsize, ysize, zSizes[0]);
-	uint3 dimensions_d1 = make_uint3(xsize, ysize, zSizes[1]);
-	uint3 dimensions_d2 = make_uint3(xsize, ysize, zSizes[2]);
-	uint3 dimensions_d3 = make_uint3(xsize, ysize, zSizes[3]);
-	double2 lapfacs = make_double2(lapfac, lapfac0);
-	uint iter = 0;
 	dim3 dimBlock(THREAD_BLOCK_X, THREAD_BLOCK_Y, THREAD_BLOCK_Z * VALUES_IN_BLOCK);
-	dim3 dimGrid_d0((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
-		(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
-		(zSizes[0] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
-	dim3 dimGrid_d1((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
-		(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
-		(zSizes[1] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
-	dim3 dimGrid_d2((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
-		(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
-		(zSizes[2] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
-	dim3 dimGrid_d3((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
-		(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
-		(zSizes[3] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
+	std::vector<dim3> dimGrids(gpuCount);
+	std::vector<uint3> dimensions(gpuCount);
+	for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
+	{
+		dimensions[gpuIdx] = make_uint3(xsize, ysize, zSizes[gpuIdx]);
+		dimGrids[gpuIdx] = dim3((xsize + THREAD_BLOCK_X - 1) / THREAD_BLOCK_X,
+			(ysize + THREAD_BLOCK_Y - 1) / THREAD_BLOCK_Y,
+			(zSizes[gpuIdx] + THREAD_BLOCK_Z - 1) / THREAD_BLOCK_Z);
+	}
 
+	std::vector<cudaMemcpy3DParms> evenMemcpiesFrom(gpuCount - 1, { 0 });
+	std::vector<cudaMemcpy3DParms> evenMemcpiesTo(gpuCount - 1, { 0 });
+	std::vector<cudaMemcpy3DParms> oddMemcpiesFrom(gpuCount - 1, { 0 });
+	std::vector<cudaMemcpy3DParms> oddMemcpiesTo(gpuCount - 1, { 0 });
+	
 	cudaExtent oneSliceExtent = make_cudaExtent(dxsize * sizeof(BlockPsis), dysize, 1);
+	for (uint gpuIdx = 0; gpuIdx < gpuCount - 1; ++gpuIdx)
+	{
+		cudaPitchedPtr evenFromSrc = d_cudaEvenPsis[gpuIdx];
+		cudaPitchedPtr evenFromDst = d_cudaEvenPsis[gpuIdx + 1];
+		cudaPitchedPtr evenToSrc = d_cudaEvenPsis[gpuIdx + 1];
+		cudaPitchedPtr evenToDst = d_cudaEvenPsis[gpuIdx];
+	
+		cudaPitchedPtr oddFromSrc = d_cudaOddPsis[gpuIdx];
+		cudaPitchedPtr oddFromDst = d_cudaOddPsis[gpuIdx + 1];
+		cudaPitchedPtr oddToSrc = d_cudaOddPsis[gpuIdx + 1];
+		cudaPitchedPtr oddToDst = d_cudaOddPsis[gpuIdx];
+	
+		evenFromSrc.ptr = ((char*)evenFromSrc.ptr) + d_evenPsis[gpuIdx].slicePitch * (dzSizes[gpuIdx] - 2);
+		evenToDst.ptr = ((char*)evenToDst.ptr) + d_evenPsis[gpuIdx].slicePitch * (dzSizes[gpuIdx] - 1);
+		evenToSrc.ptr = ((char*)evenToSrc.ptr) + d_evenPsis[gpuIdx + 1].slicePitch * 1;
+		evenFromDst.ptr = ((char*)evenFromDst.ptr) + d_evenPsis[gpuIdx + 1].slicePitch * 0;
+	
+		oddFromSrc.ptr = ((char*)oddFromSrc.ptr) + d_oddPsis[gpuIdx].slicePitch * (dzSizes[gpuIdx] - 2);
+		oddToDst.ptr = ((char*)oddToDst.ptr) + d_oddPsis[gpuIdx].slicePitch * (dzSizes[gpuIdx] - 1);
+		oddToSrc.ptr = ((char*)oddToSrc.ptr) + d_oddPsis[gpuIdx + 1].slicePitch * 1;
+		oddFromDst.ptr = ((char*)oddFromDst.ptr) + d_oddPsis[gpuIdx + 1].slicePitch * 0;
 
-	cudaMemcpy3DParms even_d0_to_d1 = { 0 };
-	cudaMemcpy3DParms even_d1_to_d0 = { 0 };
-	cudaMemcpy3DParms even_d1_to_d2 = { 0 };
-	cudaMemcpy3DParms even_d2_to_d1 = { 0 };
-	cudaMemcpy3DParms even_d2_to_d3 = { 0 };
-	cudaMemcpy3DParms even_d3_to_d2 = { 0 };
+		evenMemcpiesFrom[gpuIdx].srcPtr = evenFromSrc;
+		evenMemcpiesFrom[gpuIdx].dstPtr = evenFromDst;
+		evenMemcpiesFrom[gpuIdx].extent = oneSliceExtent;
+		evenMemcpiesFrom[gpuIdx].kind = cudaMemcpyDefault;
 
-	cudaMemcpy3DParms odd_d0_to_d1 = { 0 };
-	cudaMemcpy3DParms odd_d1_to_d0 = { 0 };
-	cudaMemcpy3DParms odd_d1_to_d2 = { 0 };
-	cudaMemcpy3DParms odd_d2_to_d1 = { 0 };
-	cudaMemcpy3DParms odd_d2_to_d3 = { 0 };
-	cudaMemcpy3DParms odd_d3_to_d2 = { 0 };
+		evenMemcpiesTo[gpuIdx].srcPtr = evenToSrc;
+		evenMemcpiesTo[gpuIdx].dstPtr = evenToDst;
+		evenMemcpiesTo[gpuIdx].extent = oneSliceExtent;
+		evenMemcpiesTo[gpuIdx].kind = cudaMemcpyDefault;
 
-	cudaPitchedPtr even_d0_src = d_cudaEvenPsis[0];
-	cudaPitchedPtr even_d0_dst = d_cudaEvenPsis[0];
-	cudaPitchedPtr even_d1_src = d_cudaEvenPsis[1];
-	cudaPitchedPtr even_d1_dst = d_cudaEvenPsis[1];
-	cudaPitchedPtr even_d2_src = d_cudaEvenPsis[2];
-	cudaPitchedPtr even_d2_dst = d_cudaEvenPsis[2];
-	cudaPitchedPtr even_d3_src = d_cudaEvenPsis[3];
-	cudaPitchedPtr even_d3_dst = d_cudaEvenPsis[3];
+		oddMemcpiesFrom[gpuIdx].srcPtr = oddFromSrc;
+		oddMemcpiesFrom[gpuIdx].dstPtr = oddFromDst;
+		oddMemcpiesFrom[gpuIdx].extent = oneSliceExtent;
+		oddMemcpiesFrom[gpuIdx].kind = cudaMemcpyDefault;
 
-	cudaPitchedPtr even_d1_src_to_d2 = d_cudaEvenPsis[1];
-	cudaPitchedPtr even_d1_dst_from_d2 = d_cudaEvenPsis[1];
-	cudaPitchedPtr even_d2_src_to_d1 = d_cudaEvenPsis[2];
-	cudaPitchedPtr even_d2_dst_from_d1 = d_cudaEvenPsis[2];
+		oddMemcpiesTo[gpuIdx].srcPtr = oddToSrc;
+		oddMemcpiesTo[gpuIdx].dstPtr = oddToDst;
+		oddMemcpiesTo[gpuIdx].extent = oneSliceExtent;
+		oddMemcpiesTo[gpuIdx].kind = cudaMemcpyDefault;
+	}
 
-	cudaPitchedPtr odd_d0_src = d_cudaOddPsis[0];
-	cudaPitchedPtr odd_d0_dst = d_cudaOddPsis[0];
-	cudaPitchedPtr odd_d1_src = d_cudaOddPsis[1];
-	cudaPitchedPtr odd_d1_dst = d_cudaOddPsis[1];
-	cudaPitchedPtr odd_d2_src = d_cudaOddPsis[2];
-	cudaPitchedPtr odd_d2_dst = d_cudaOddPsis[2];
-	cudaPitchedPtr odd_d3_src = d_cudaOddPsis[3];
-	cudaPitchedPtr odd_d3_dst = d_cudaOddPsis[3];
+	struct StreamsAndEvents
+	{
+		cudaStream_t backwardsStream;
+		cudaStream_t forwardsStream;
+		cudaEvent_t backwardsEvent;
+		cudaEvent_t forwardsEvent;
+	};
+	std::vector<StreamsAndEvents> streamAndEvents(gpuCount);
+	for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
+	{
+		cudaSetDevice(gpuIdx);
 
-	cudaPitchedPtr odd_d1_src_to_d2 = d_cudaOddPsis[1];
-	cudaPitchedPtr odd_d1_dst_from_d2 = d_cudaOddPsis[1];
-	cudaPitchedPtr odd_d2_src_to_d1 = d_cudaOddPsis[2];
-	cudaPitchedPtr odd_d2_dst_from_d1 = d_cudaOddPsis[2];
+		cudaStreamCreate(&streamAndEvents[gpuIdx].backwardsStream);
+		cudaEventCreate(&streamAndEvents[gpuIdx].backwardsEvent);
+		cudaEventRecord(streamAndEvents[gpuIdx].backwardsEvent, streamAndEvents[gpuIdx].backwardsStream);
 
-	even_d0_src.ptr = ((char*)even_d0_src.ptr) + d_evenPsis[0].slicePitch * (dzSizes[0] - 2);
-	even_d0_dst.ptr = ((char*)even_d0_dst.ptr) + d_evenPsis[0].slicePitch * (dzSizes[0] - 1);
-	even_d1_src.ptr = ((char*)even_d1_src.ptr) + d_evenPsis[1].slicePitch * 1;
-	even_d1_dst.ptr = ((char*)even_d1_dst.ptr) + d_evenPsis[1].slicePitch * 0;
-	even_d2_src.ptr = ((char*)even_d2_src.ptr) + d_evenPsis[2].slicePitch * (dzSizes[2] - 2);
-	even_d2_dst.ptr = ((char*)even_d2_dst.ptr) + d_evenPsis[2].slicePitch * (dzSizes[2] - 1);
-	even_d3_src.ptr = ((char*)even_d3_src.ptr) + d_evenPsis[3].slicePitch * 1;
-	even_d3_dst.ptr = ((char*)even_d3_dst.ptr) + d_evenPsis[3].slicePitch * 0;
-
-	even_d1_src_to_d2.ptr = ((char*)even_d1_src_to_d2.ptr) + d_evenPsis[1].slicePitch * (dzSizes[1] - 2);
-	even_d1_dst_from_d2.ptr = ((char*)even_d1_dst_from_d2.ptr) + d_evenPsis[1].slicePitch * (dzSizes[1] - 1);
-	even_d2_src_to_d1.ptr = ((char*)even_d2_src_to_d1.ptr) + d_evenPsis[2].slicePitch * 1;
-	even_d2_dst_from_d1.ptr = ((char*)even_d2_dst_from_d1.ptr) + d_evenPsis[2].slicePitch * 0;
-
-	odd_d0_src.ptr = ((char*)odd_d0_src.ptr) + d_oddPsis[0].slicePitch * (dzSizes[0] - 2);
-	odd_d0_dst.ptr = ((char*)odd_d0_dst.ptr) + d_oddPsis[0].slicePitch * (dzSizes[0] - 1);
-	odd_d1_src.ptr = ((char*)odd_d1_src.ptr) + d_oddPsis[1].slicePitch * 1;
-	odd_d1_dst.ptr = ((char*)odd_d1_dst.ptr) + d_oddPsis[1].slicePitch * 0;
-	odd_d2_src.ptr = ((char*)odd_d2_src.ptr) + d_oddPsis[2].slicePitch * (dzSizes[2] - 2);
-	odd_d2_dst.ptr = ((char*)odd_d2_dst.ptr) + d_oddPsis[2].slicePitch * (dzSizes[2] - 1);
-	odd_d3_src.ptr = ((char*)odd_d3_src.ptr) + d_oddPsis[3].slicePitch * 1;
-	odd_d3_dst.ptr = ((char*)odd_d3_dst.ptr) + d_oddPsis[3].slicePitch * 0;
-
-	odd_d1_src_to_d2.ptr = ((char*)odd_d1_src_to_d2.ptr) + d_oddPsis[1].slicePitch * (dzSizes[1] - 2);
-	odd_d1_dst_from_d2.ptr = ((char*)odd_d1_dst_from_d2.ptr) + d_oddPsis[1].slicePitch * (dzSizes[1] - 1);
-	odd_d2_src_to_d1.ptr = ((char*)odd_d2_src_to_d1.ptr) + d_oddPsis[2].slicePitch * 1;
-	odd_d2_dst_from_d1.ptr = ((char*)odd_d2_dst_from_d1.ptr) + d_oddPsis[2].slicePitch * 0;
-
-	even_d0_to_d1.srcPtr = even_d0_src;
-	even_d0_to_d1.dstPtr = even_d1_dst;
-	even_d0_to_d1.extent = oneSliceExtent;
-	even_d0_to_d1.kind = cudaMemcpyDefault;
-	even_d1_to_d0.srcPtr = even_d1_src;
-	even_d1_to_d0.dstPtr = even_d0_dst;
-	even_d1_to_d0.extent = oneSliceExtent;
-	even_d1_to_d0.kind = cudaMemcpyDefault;
-	even_d2_to_d3.srcPtr = even_d2_src;
-	even_d2_to_d3.dstPtr = even_d3_dst;
-	even_d2_to_d3.extent = oneSliceExtent;
-	even_d2_to_d3.kind = cudaMemcpyDefault;
-	even_d3_to_d2.srcPtr = even_d3_src;
-	even_d3_to_d2.dstPtr = even_d2_dst;
-	even_d3_to_d2.extent = oneSliceExtent;
-	even_d3_to_d2.kind = cudaMemcpyDefault;
-
-	even_d1_to_d2.srcPtr = even_d1_src_to_d2;
-	even_d1_to_d2.dstPtr = even_d2_dst_from_d1;
-	even_d1_to_d2.extent = oneSliceExtent;
-	even_d1_to_d2.kind = cudaMemcpyDefault;
-
-	even_d2_to_d1.srcPtr = even_d2_src_to_d1;
-	even_d2_to_d1.dstPtr = even_d1_dst_from_d2;
-	even_d2_to_d1.extent = oneSliceExtent;
-	even_d2_to_d1.kind = cudaMemcpyDefault;
-
-	odd_d0_to_d1.srcPtr = odd_d0_src;
-	odd_d0_to_d1.dstPtr = odd_d1_dst;
-	odd_d0_to_d1.extent = oneSliceExtent;
-	odd_d0_to_d1.kind = cudaMemcpyDefault;
-	odd_d1_to_d0.srcPtr = odd_d1_src;
-	odd_d1_to_d0.dstPtr = odd_d0_dst;
-	odd_d1_to_d0.extent = oneSliceExtent;
-	odd_d1_to_d0.kind = cudaMemcpyDefault;
-	odd_d2_to_d3.srcPtr = odd_d2_src;
-	odd_d2_to_d3.dstPtr = odd_d3_dst;
-	odd_d2_to_d3.extent = oneSliceExtent;
-	odd_d2_to_d3.kind = cudaMemcpyDefault;
-	odd_d3_to_d2.srcPtr = odd_d3_src;
-	odd_d3_to_d2.dstPtr = odd_d2_dst;
-	odd_d3_to_d2.extent = oneSliceExtent;
-	odd_d3_to_d2.kind = cudaMemcpyDefault;
-
-	odd_d1_to_d2.srcPtr = odd_d1_src_to_d2;
-	odd_d1_to_d2.dstPtr = odd_d2_dst_from_d1;
-	odd_d1_to_d2.extent = oneSliceExtent;
-	odd_d1_to_d2.kind = cudaMemcpyDefault;
-
-	odd_d2_to_d1.srcPtr = odd_d2_src_to_d1;
-	odd_d2_to_d1.dstPtr = odd_d1_dst_from_d2;
-	odd_d2_to_d1.extent = oneSliceExtent;
-	odd_d2_to_d1.kind = cudaMemcpyDefault;
-
-	//std::cout << "block dim = " << dimBlock.x << ", " << dimBlock.y << ", "<< dimBlock.z << std::endl;
-	//std::cout << "grid dim = " << dimGrid.x << ", " << dimGrid.y << ", "<< dimGrid.z << std::endl;
-
-	cudaStream_t stream0_d0;
-
-	cudaStream_t stream0_d1;
-	cudaStream_t stream1_d1;
-
-	cudaStream_t stream0_d2;
-	cudaStream_t stream1_d2;
-
-	cudaStream_t stream0_d3;
-
-	cudaEvent_t event_d0_to_d1;
-
-	cudaEvent_t event_d1_to_d0;
-	cudaEvent_t event_d1_to_d2;
-	cudaEvent_t event_d1_kernel;
-
-	cudaEvent_t event_d2_to_d1;
-	cudaEvent_t event_d2_to_d3;
-	cudaEvent_t event_d2_kernel;
-
-	cudaEvent_t event_d3_to_d2;
-
-	cudaSetDevice(0);
-	cudaStreamCreate(&stream0_d0);
-	cudaEventCreate(&event_d0_to_d1);
-	cudaEventRecord(event_d0_to_d1, stream0_d0);
-
-	cudaSetDevice(1);
-	cudaStreamCreate(&stream0_d1);
-	cudaEventCreate(&event_d1_to_d0);
-	cudaEventRecord(event_d1_to_d0, stream0_d1);
-	cudaStreamCreate(&stream1_d1);
-	cudaEventCreate(&event_d1_to_d2);
-	cudaEventRecord(event_d1_to_d2, stream1_d1);
-	cudaEventCreate(&event_d1_kernel);
-
-	cudaSetDevice(2);
-	cudaStreamCreate(&stream0_d2);
-	cudaEventCreate(&event_d2_to_d1);
-	cudaEventRecord(event_d2_to_d1, stream0_d2);
-	cudaStreamCreate(&stream1_d2);
-	cudaEventCreate(&event_d2_to_d3);
-	cudaEventRecord(event_d2_to_d3, stream1_d2);
-	cudaEventCreate(&event_d2_kernel);
-
-	cudaSetDevice(3);
-	cudaStreamCreate(&stream0_d3);
-	cudaEventCreate(&event_d3_to_d2);
-	cudaEventRecord(event_d3_to_d2, stream0_d3);
-
-	d_cudaEvenPsis[0].ptr = ((char*)d_cudaEvenPsis[0].ptr) + d_evenPsis[0].slicePitch;
-	h_cudaEvenPsis[0].ptr = ((BlockPsis*)h_cudaEvenPsis[0].ptr) + dxsize * dysize;
-	psiExtents[0].depth -= 2;
+		cudaStreamCreate(&streamAndEvents[gpuIdx].forwardsStream);
+		cudaEventCreate(&streamAndEvents[gpuIdx].forwardsEvent);
+		cudaEventRecord(streamAndEvents[gpuIdx].forwardsEvent, streamAndEvents[gpuIdx].forwardsStream);
+	}
 
 #if SAVE_PICTURE || SAVE_VOLUME
-	cudaMemcpy3DParms evenPsiBackParams_d0 = { 0 };
-	evenPsiBackParams_d0.srcPtr = d_cudaEvenPsis[0];
-	evenPsiBackParams_d0.dstPtr = h_cudaEvenPsis[0];
-	evenPsiBackParams_d0.extent = psiExtents[0];
-	evenPsiBackParams_d0.kind = cudaMemcpyDeviceToHost;
+	std::vector<cudaMemcpy3DParms> evenPsiBackParams(gpuCount, { 0 });
+	for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
+	{
+		d_cudaEvenPsis[gpuIdx].ptr = ((char*)d_cudaEvenPsis[gpuIdx].ptr) + d_evenPsis[gpuIdx].slicePitch;
+		h_cudaEvenPsis[gpuIdx].ptr = ((BlockPsis*)h_cudaEvenPsis[gpuIdx].ptr) + dxsize * dysize;
+		psiExtents[gpuIdx].depth -= 2;
 
-	d_cudaEvenPsis[1].ptr = ((char*)d_cudaEvenPsis[1].ptr) + d_evenPsis[1].slicePitch;
-	h_cudaEvenPsis[1].ptr = ((BlockPsis*)h_cudaEvenPsis[1].ptr) + dxsize * dysize;
-	psiExtents[1].depth -= 2;
-
-	cudaMemcpy3DParms evenPsiBackParams_d1 = { 0 };
-	evenPsiBackParams_d1.srcPtr = d_cudaEvenPsis[1];
-	evenPsiBackParams_d1.dstPtr = h_cudaEvenPsis[1];
-	evenPsiBackParams_d1.extent = psiExtents[1];
-	evenPsiBackParams_d1.kind = cudaMemcpyDeviceToHost;
-
-	d_cudaEvenPsis[2].ptr = ((char*)d_cudaEvenPsis[2].ptr) + d_evenPsis[2].slicePitch;
-	h_cudaEvenPsis[2].ptr = ((BlockPsis*)h_cudaEvenPsis[2].ptr) + dxsize * dysize;
-	psiExtents[2].depth -= 2;
-
-	cudaMemcpy3DParms evenPsiBackParams_d2 = { 0 };
-	evenPsiBackParams_d2.srcPtr = d_cudaEvenPsis[2];
-	evenPsiBackParams_d2.dstPtr = h_cudaEvenPsis[2];
-	evenPsiBackParams_d2.extent = psiExtents[2];
-	evenPsiBackParams_d2.kind = cudaMemcpyDeviceToHost;
-
-	d_cudaEvenPsis[3].ptr = ((char*)d_cudaEvenPsis[3].ptr) + d_evenPsis[3].slicePitch;
-	h_cudaEvenPsis[3].ptr = ((BlockPsis*)h_cudaEvenPsis[3].ptr) + dxsize * dysize;
-	psiExtents[3].depth -= 2;
-
-	cudaMemcpy3DParms evenPsiBackParams_d3 = { 0 };
-	evenPsiBackParams_d3.srcPtr = d_cudaEvenPsis[3];
-	evenPsiBackParams_d3.dstPtr = h_cudaEvenPsis[3];
-	evenPsiBackParams_d3.extent = psiExtents[3];
-	evenPsiBackParams_d3.kind = cudaMemcpyDeviceToHost;
+		evenPsiBackParams[gpuIdx].srcPtr = d_cudaEvenPsis[gpuIdx];
+		evenPsiBackParams[gpuIdx].dstPtr = h_cudaEvenPsis[gpuIdx];
+		evenPsiBackParams[gpuIdx].extent = psiExtents[gpuIdx];
+		evenPsiBackParams[gpuIdx].kind = cudaMemcpyDeviceToHost;
+	}
 #endif
+	double2 lapfacs = make_double2(lapfac, lapfac0);
+
 	const uint time0 = clock();
+	uint iter = 0;
 	while (true)
 	{
 #if SAVE_PICTURE || SAVE_VOLUME
@@ -767,92 +623,64 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 		for (uint step = 0; step < steps_per_iteration; step++)
 		{
 			// update odd values
-			cudaSetDevice(0);
-			cudaStreamWaitEvent(stream0_d0, event_d1_to_d0, 0);
-			update<<<dimGrid_d0, dimBlock, 0, stream0_d0>>>(d_oddPsis[0], d_evenPsis[0], d_pots[0], d_lapinds[0], lapfacs, g, dimensions_d0);
-			cudaSetDevice(1);
-			cudaStreamWaitEvent(stream0_d1, event_d0_to_d1, 0);
-			cudaStreamWaitEvent(stream0_d1, event_d2_to_d1, 0);
-			update<<<dimGrid_d1, dimBlock, 0, stream0_d1>>>(d_oddPsis[1], d_evenPsis[1], d_pots[1], d_lapinds[1], lapfacs, g, dimensions_d1);
-			cudaEventRecord(event_d1_kernel, stream0_d1);
-			cudaSetDevice(2);
-			cudaStreamWaitEvent(stream0_d2, event_d1_to_d2, 0);
-			cudaStreamWaitEvent(stream0_d2, event_d3_to_d2, 0);
-			update<<<dimGrid_d2, dimBlock, 0, stream0_d2>>>(d_oddPsis[2], d_evenPsis[2], d_pots[2], d_lapinds[2], lapfacs, g, dimensions_d2);
-			cudaEventRecord(event_d2_kernel, stream0_d2);
-			cudaSetDevice(3);
-			cudaStreamWaitEvent(stream0_d3, event_d2_to_d3, 0);
-			update<<<dimGrid_d3, dimBlock, 0, stream0_d3>>>(d_oddPsis[3], d_evenPsis[3], d_pots[3], d_lapinds[3], lapfacs, g, dimensions_d3);
+			for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
+			{
+				cudaSetDevice(gpuIdx);
+				if (gpuIdx < gpuCount - 1)
+					cudaStreamWaitEvent(streamAndEvents[gpuIdx].forwardsStream, streamAndEvents[gpuIdx + 1].backwardsEvent, 0);
+				if (gpuIdx > 0)
+					cudaStreamWaitEvent(streamAndEvents[gpuIdx].forwardsStream, streamAndEvents[gpuIdx - 1].forwardsEvent, 0);
+				update << <dimGrids[gpuIdx], dimBlock, 0, streamAndEvents[gpuIdx].forwardsStream >> > (d_oddPsis[gpuIdx], d_evenPsis[gpuIdx], d_pots[gpuIdx], d_lapinds[gpuIdx], lapfacs, g, dimensions[gpuIdx]);
+			}
 
-			cudaSetDevice(0);
-			cudaMemcpy3DAsync(&odd_d0_to_d1, stream0_d0);
-			cudaEventRecord(event_d0_to_d1, stream0_d0);
-			cudaSetDevice(1);
-			cudaMemcpy3DAsync(&odd_d1_to_d0, stream0_d1);
-			cudaEventRecord(event_d1_to_d0, stream0_d1);
-			cudaStreamWaitEvent(stream1_d1, event_d1_kernel, 0);
-			cudaMemcpy3DAsync(&odd_d1_to_d2, stream1_d1);
-			cudaEventRecord(event_d1_to_d2, stream1_d1);
-			cudaSetDevice(2);
-			cudaMemcpy3DAsync(&odd_d2_to_d3, stream0_d2);
-			cudaEventRecord(event_d2_to_d3, stream0_d2);
-			cudaStreamWaitEvent(stream1_d2, event_d2_kernel, 0);
-			cudaMemcpy3DAsync(&odd_d2_to_d1, stream1_d2);
-			cudaEventRecord(event_d2_to_d1, stream1_d2);
-			cudaSetDevice(3);
-			cudaMemcpy3DAsync(&odd_d3_to_d2, stream0_d3);
-			cudaEventRecord(event_d3_to_d2, stream0_d3);
+			for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
+			{
+				cudaSetDevice(gpuIdx);
+				if (gpuIdx < gpuCount - 1)
+				{
+					cudaMemcpy3DAsync(&oddMemcpiesFrom[gpuIdx], streamAndEvents[gpuIdx].forwardsStream);
+					cudaEventRecord(streamAndEvents[gpuIdx].forwardsEvent, streamAndEvents[gpuIdx].forwardsStream);
+				}
+				if (gpuIdx > 0)
+				{
+					cudaMemcpy3DAsync(&oddMemcpiesTo[gpuIdx - 1], streamAndEvents[3].backwardsStream);
+					cudaEventRecord(streamAndEvents[3].backwardsEvent, streamAndEvents[3].backwardsStream);
+				}
+			}
 
 			// update even values
-			cudaSetDevice(0);
-			cudaStreamWaitEvent(stream0_d0, event_d1_to_d0, 0);
-			update<<<dimGrid_d0, dimBlock, 0, stream0_d0>>>(d_evenPsis[0], d_oddPsis[0], d_pots[0], d_lapinds[0], lapfacs, g, dimensions_d0);
-			cudaSetDevice(1);
-			cudaStreamWaitEvent(stream0_d1, event_d0_to_d1, 0);
-			cudaStreamWaitEvent(stream0_d1, event_d2_to_d1, 0);
-			update<<<dimGrid_d1, dimBlock, 0, stream0_d1>>>(d_evenPsis[1], d_oddPsis[1], d_pots[1], d_lapinds[1], lapfacs, g, dimensions_d1);
-			cudaEventRecord(event_d1_kernel, stream0_d1);
-			cudaSetDevice(2);
-			cudaStreamWaitEvent(stream0_d2, event_d1_to_d2, 0);
-			cudaStreamWaitEvent(stream0_d2, event_d3_to_d2, 0);
-			update<<<dimGrid_d2, dimBlock, 0, stream0_d2>>>(d_evenPsis[2], d_oddPsis[2], d_pots[2], d_lapinds[2], lapfacs, g, dimensions_d2);
-			cudaEventRecord(event_d2_kernel, stream0_d2);
-			cudaSetDevice(3);
-			cudaStreamWaitEvent(stream0_d3, event_d2_to_d3, 0);
-			update<<<dimGrid_d3, dimBlock, 0, stream0_d3>>>(d_evenPsis[3], d_oddPsis[3], d_pots[3], d_lapinds[3], lapfacs, g, dimensions_d3);
+			for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
+			{
+				cudaSetDevice(gpuIdx);
+				if (gpuIdx < gpuCount - 1)
+					cudaStreamWaitEvent(streamAndEvents[gpuIdx].forwardsStream, streamAndEvents[gpuIdx + 1].backwardsEvent, 0);
+				if (gpuIdx > 0)
+					cudaStreamWaitEvent(streamAndEvents[gpuIdx].forwardsStream, streamAndEvents[gpuIdx - 1].forwardsEvent, 0);
+				update << <dimGrids[gpuIdx], dimBlock, 0, streamAndEvents[gpuIdx].forwardsStream >> > (d_evenPsis[gpuIdx], d_oddPsis[gpuIdx], d_pots[gpuIdx], d_lapinds[gpuIdx], lapfacs, g, dimensions[gpuIdx]);
+			}
 
-			cudaSetDevice(0);
-			cudaMemcpy3DAsync(&even_d0_to_d1, stream0_d0);
-			cudaEventRecord(event_d0_to_d1, stream0_d0);
-			cudaSetDevice(1);
-			cudaMemcpy3DAsync(&even_d1_to_d0, stream0_d1);
-			cudaEventRecord(event_d1_to_d0, stream0_d1);
-			cudaStreamWaitEvent(stream1_d1, event_d1_kernel, 0);
-			cudaMemcpy3DAsync(&even_d1_to_d2, stream1_d1);
-			cudaEventRecord(event_d1_to_d2, stream1_d1);
-			cudaSetDevice(2);
-			cudaMemcpy3DAsync(&even_d2_to_d3, stream0_d2);
-			cudaEventRecord(event_d2_to_d3, stream0_d2);
-			cudaStreamWaitEvent(stream1_d2, event_d2_kernel, 0);
-			cudaMemcpy3DAsync(&even_d2_to_d1, stream1_d2);
-			cudaEventRecord(event_d2_to_d1, stream1_d2);
-			cudaSetDevice(3);
-			cudaMemcpy3DAsync(&even_d3_to_d2, stream0_d3);
-			cudaEventRecord(event_d3_to_d2, stream0_d3);
+			for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
+			{
+				cudaSetDevice(gpuIdx);
+				if (gpuIdx < gpuCount - 1)
+				{
+					cudaMemcpy3DAsync(&evenMemcpiesFrom[gpuIdx], streamAndEvents[gpuIdx].forwardsStream);
+					cudaEventRecord(streamAndEvents[gpuIdx].forwardsEvent, streamAndEvents[gpuIdx].forwardsStream);
+				}
+				if (gpuIdx > 0)
+				{
+					cudaMemcpy3DAsync(&evenMemcpiesTo[gpuIdx - 1], streamAndEvents[3].backwardsStream);
+					cudaEventRecord(streamAndEvents[3].backwardsEvent, streamAndEvents[3].backwardsStream);
+				}
+			}
 		}
 #if SAVE_PICTURE || SAVE_VOLUME
 		// Copy back from device memory to host memory
-		cudaSetDevice(0);
-		checkCudaErrors(cudaMemcpy3DAsync(&evenPsiBackParams_d0));
-
-		cudaSetDevice(1);
-		checkCudaErrors(cudaMemcpy3DAsync(&evenPsiBackParams_d1));
-
-		cudaSetDevice(2);
-		checkCudaErrors(cudaMemcpy3DAsync(&evenPsiBackParams_d2));
-
-		cudaSetDevice(3);
-		checkCudaErrors(cudaMemcpy3DAsync(&evenPsiBackParams_d3));
+		for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
+		{
+			cudaSetDevice(gpuIdx);
+			checkCudaErrors(cudaMemcpy3DAsync(&evenPsiBackParams[gpuIdx]));
+		}
 #endif
 	}
 	std::cout << "iteration time = " << (1e-6 * (clock() - time0)) / number_of_iterations << std::endl;
@@ -903,9 +731,10 @@ int main(int argc, char** argv)
 	maxz = state.searchMaxZ(eps);
 	//std::cout << "maxf=" << state.searchFunctionMax() << std::endl;
 #endif
+	uint gpuCount = (argc > 1) ? std::stoi(argv[1]) : 4;
 
-	const int number_of_iterations = 5;
-	const ddouble iteration_period = 1.0;
+	const int number_of_iterations = 10;
+	const ddouble iteration_period = 0.1;
 	const ddouble block_scale = PIx2 / (20.0 * sqrt(state.integrateCurvature()));
 
 	std::cout << "4 GPUs version pasimysiini" << std::endl;
@@ -917,8 +746,8 @@ int main(int argc, char** argv)
 	std::cout << "maxz = " << maxz << std::endl;
 
 	// integrate in time using DEC
-	if (IS_3D) integrateInTime(state, block_scale, Vector3(-maxr, -maxr, -maxz), Vector3(maxr, maxr, maxz), iteration_period, number_of_iterations); // use this for 3d
-	else integrateInTime(state, block_scale, Vector3(-maxr, -maxr, 0.0), Vector3(maxr, maxr, 0.0), iteration_period, number_of_iterations); // use this for 2d
+	if (IS_3D) integrateInTime(state, block_scale, Vector3(-maxr, -maxr, -maxz), Vector3(maxr, maxr, maxz), iteration_period, number_of_iterations, gpuCount); // use this for 3d
+	else integrateInTime(state, block_scale, Vector3(-maxr, -maxr, 0.0), Vector3(maxr, maxr, 0.0), iteration_period, number_of_iterations, gpuCount); // use this for 2d
 
 	return 0;
 }
