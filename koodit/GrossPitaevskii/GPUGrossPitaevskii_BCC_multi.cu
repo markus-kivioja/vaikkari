@@ -204,13 +204,13 @@ __global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr pote
 	size_t zid = blockIdx.z * blockDim.z + threadIdx.z;
 
 	// Load Laplacian indices into LDS
-	__shared__ int2 ldsLapInd[INDICES_PER_BLOCK];
-	size_t threadIdxInBlock = blockDim.x * blockDim.y * threadIdx.z + blockDim.x * threadIdx.y + threadIdx.x;
-	if (threadIdxInBlock < INDICES_PER_BLOCK)
-	{
-		ldsLapInd[threadIdxInBlock] = lapInd[threadIdxInBlock];
-	}
-	__syncthreads();
+	//__shared__ int2 ldsLapInd[INDICES_PER_BLOCK];
+	//size_t threadIdxInBlock = blockDim.x * blockDim.y * threadIdx.z + blockDim.x * threadIdx.y + threadIdx.x;
+	//if (threadIdxInBlock < INDICES_PER_BLOCK)
+	//{
+	//	ldsLapInd[threadIdxInBlock] = lapInd[threadIdxInBlock];
+	//}
+	//__syncthreads();
 
 	size_t dataZid = zid / VALUES_IN_BLOCK; // One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
 
@@ -230,10 +230,10 @@ __global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr pote
 
 	// 4 primary faces
 	uint face = dualNodeId * FACE_COUNT;
-	double2 sum = (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
-	sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
-	sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
-	sum += (*(BlockPsis*)(prevPsi + ldsLapInd[face].x)).values[ldsLapInd[face++].y];
+	double2 sum = (*(BlockPsis*)(prevPsi + lapInd[face].x)).values[lapInd[face++].y];
+	sum += (*(BlockPsis*)(prevPsi + lapInd[face].x)).values[lapInd[face++].y];
+	sum += (*(BlockPsis*)(prevPsi + lapInd[face].x)).values[lapInd[face++].y];
+	sum += (*(BlockPsis*)(prevPsi + lapInd[face].x)).values[lapInd[face++].y];
 
 	double2 prev = (*(BlockPsis*)prevPsi).values[dualNodeId];
 	double normsq = prev.x * prev.x + prev.y * prev.y;
@@ -385,7 +385,19 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 		cudaSetDevice(gpuIdx);
 		for (uint peerGpu = 0; peerGpu < gpuCount; ++peerGpu)
 		{
-			cudaDeviceEnablePeerAccess(peerGpu, 0);
+			if (peerGpu != gpuIdx)
+			{
+				int canAccessPeer;
+				cudaDeviceCanAccessPeer(&canAccessPeer, gpuIdx, peerGpu);
+				if ((canAccessPeer == 1) && cudaDeviceEnablePeerAccess(peerGpu, 0) == cudaSuccess)
+				{
+					//std::cout << "GPU " << gpuIdx << " can access GPU " << peerGpu << std::endl;
+				}
+				else
+				{
+					std::cout << "GPU " << gpuIdx << " can NOT access GPU " << peerGpu << std::endl;
+				}
+			}
 		}
 		checkCudaErrors(cudaMalloc3D(&d_cudaEvenPsis[gpuIdx], psiExtents[gpuIdx]));
 		checkCudaErrors(cudaMalloc3D(&d_cudaOddPsis[gpuIdx], psiExtents[gpuIdx]));
@@ -528,21 +540,32 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 	{
 		cudaStream_t backwardsStream;
 		cudaStream_t forwardsStream;
+		cudaStream_t kernelStream;
+
 		cudaEvent_t backwardsEvent;
 		cudaEvent_t forwardsEvent;
+		cudaEvent_t kernelEvent;
 	};
 	std::vector<StreamsAndEvents> streamAndEvents(gpuCount);
 	for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
 	{
 		cudaSetDevice(gpuIdx);
-
 		cudaStreamCreate(&streamAndEvents[gpuIdx].backwardsStream);
-		cudaEventCreate(&streamAndEvents[gpuIdx].backwardsEvent);
-		cudaEventRecord(streamAndEvents[gpuIdx].backwardsEvent, streamAndEvents[gpuIdx].backwardsStream);
-
 		cudaStreamCreate(&streamAndEvents[gpuIdx].forwardsStream);
+		cudaStreamCreate(&streamAndEvents[gpuIdx].kernelStream);
+
+		cudaEventCreate(&streamAndEvents[gpuIdx].backwardsEvent);
 		cudaEventCreate(&streamAndEvents[gpuIdx].forwardsEvent);
-		cudaEventRecord(streamAndEvents[gpuIdx].forwardsEvent, streamAndEvents[gpuIdx].forwardsStream);
+		cudaEventCreate(&streamAndEvents[gpuIdx].kernelEvent);
+
+		if (gpuIdx < gpuCount - 1)
+		{
+			cudaEventRecord(streamAndEvents[gpuIdx].forwardsEvent, streamAndEvents[gpuIdx].forwardsStream);
+		}
+		if (0 < gpuIdx)
+		{
+			cudaEventRecord(streamAndEvents[gpuIdx].backwardsEvent, streamAndEvents[gpuIdx].backwardsStream);
+		}
 	}
 
 #if SAVE_PICTURE || SAVE_VOLUME
@@ -627,10 +650,14 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 			{
 				cudaSetDevice(gpuIdx);
 				if (gpuIdx < gpuCount - 1)
-					cudaStreamWaitEvent(streamAndEvents[gpuIdx].forwardsStream, streamAndEvents[gpuIdx + 1].backwardsEvent, 0);
+					cudaStreamWaitEvent(streamAndEvents[gpuIdx].kernelStream, streamAndEvents[gpuIdx + 1].backwardsEvent, 0);
 				if (gpuIdx > 0)
-					cudaStreamWaitEvent(streamAndEvents[gpuIdx].forwardsStream, streamAndEvents[gpuIdx - 1].forwardsEvent, 0);
-				update << <dimGrids[gpuIdx], dimBlock, 0, streamAndEvents[gpuIdx].forwardsStream >> > (d_oddPsis[gpuIdx], d_evenPsis[gpuIdx], d_pots[gpuIdx], d_lapinds[gpuIdx], lapfacs, g, dimensions[gpuIdx]);
+					cudaStreamWaitEvent(streamAndEvents[gpuIdx].kernelStream, streamAndEvents[gpuIdx - 1].forwardsEvent, 0);
+
+				// Launch the CUDA kernel, even -> odd
+				update << <dimGrids[gpuIdx], dimBlock, 0, streamAndEvents[gpuIdx].kernelStream >> > (d_oddPsis[gpuIdx], d_evenPsis[gpuIdx], d_pots[gpuIdx], d_lapinds[gpuIdx], lapfacs, g, dimensions[gpuIdx]);
+
+				cudaEventRecord(streamAndEvents[gpuIdx].kernelEvent, streamAndEvents[gpuIdx].kernelStream);
 			}
 
 			for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
@@ -638,13 +665,15 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 				cudaSetDevice(gpuIdx);
 				if (gpuIdx < gpuCount - 1)
 				{
+					cudaStreamWaitEvent(streamAndEvents[gpuIdx].forwardsStream, streamAndEvents[gpuIdx].kernelEvent, 0);
 					cudaMemcpy3DAsync(&oddMemcpiesFrom[gpuIdx], streamAndEvents[gpuIdx].forwardsStream);
 					cudaEventRecord(streamAndEvents[gpuIdx].forwardsEvent, streamAndEvents[gpuIdx].forwardsStream);
 				}
 				if (gpuIdx > 0)
 				{
-					cudaMemcpy3DAsync(&oddMemcpiesTo[gpuIdx - 1], streamAndEvents[3].backwardsStream);
-					cudaEventRecord(streamAndEvents[3].backwardsEvent, streamAndEvents[3].backwardsStream);
+					cudaStreamWaitEvent(streamAndEvents[gpuIdx].backwardsStream, streamAndEvents[gpuIdx].kernelEvent, 0);
+					cudaMemcpy3DAsync(&oddMemcpiesTo[gpuIdx - 1], streamAndEvents[gpuIdx].backwardsStream);
+					cudaEventRecord(streamAndEvents[gpuIdx].backwardsEvent, streamAndEvents[gpuIdx].backwardsStream);
 				}
 			}
 
@@ -653,10 +682,14 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 			{
 				cudaSetDevice(gpuIdx);
 				if (gpuIdx < gpuCount - 1)
-					cudaStreamWaitEvent(streamAndEvents[gpuIdx].forwardsStream, streamAndEvents[gpuIdx + 1].backwardsEvent, 0);
+					cudaStreamWaitEvent(streamAndEvents[gpuIdx].kernelStream, streamAndEvents[gpuIdx + 1].backwardsEvent, 0);
 				if (gpuIdx > 0)
-					cudaStreamWaitEvent(streamAndEvents[gpuIdx].forwardsStream, streamAndEvents[gpuIdx - 1].forwardsEvent, 0);
-				update << <dimGrids[gpuIdx], dimBlock, 0, streamAndEvents[gpuIdx].forwardsStream >> > (d_evenPsis[gpuIdx], d_oddPsis[gpuIdx], d_pots[gpuIdx], d_lapinds[gpuIdx], lapfacs, g, dimensions[gpuIdx]);
+					cudaStreamWaitEvent(streamAndEvents[gpuIdx].kernelStream, streamAndEvents[gpuIdx - 1].forwardsEvent, 0);
+
+				// Launch the CUDA kernel, odd -> even
+				update << <dimGrids[gpuIdx], dimBlock, 0, streamAndEvents[gpuIdx].kernelStream >> > (d_evenPsis[gpuIdx], d_oddPsis[gpuIdx], d_pots[gpuIdx], d_lapinds[gpuIdx], lapfacs, g, dimensions[gpuIdx]);
+
+				cudaEventRecord(streamAndEvents[gpuIdx].kernelEvent, streamAndEvents[gpuIdx].kernelStream);
 			}
 
 			for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
@@ -664,13 +697,15 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 				cudaSetDevice(gpuIdx);
 				if (gpuIdx < gpuCount - 1)
 				{
+					cudaStreamWaitEvent(streamAndEvents[gpuIdx].forwardsStream, streamAndEvents[gpuIdx].kernelEvent, 0);
 					cudaMemcpy3DAsync(&evenMemcpiesFrom[gpuIdx], streamAndEvents[gpuIdx].forwardsStream);
 					cudaEventRecord(streamAndEvents[gpuIdx].forwardsEvent, streamAndEvents[gpuIdx].forwardsStream);
 				}
 				if (gpuIdx > 0)
 				{
-					cudaMemcpy3DAsync(&evenMemcpiesTo[gpuIdx - 1], streamAndEvents[3].backwardsStream);
-					cudaEventRecord(streamAndEvents[3].backwardsEvent, streamAndEvents[3].backwardsStream);
+					cudaStreamWaitEvent(streamAndEvents[gpuIdx].backwardsStream, streamAndEvents[gpuIdx].kernelEvent, 0);
+					cudaMemcpy3DAsync(&evenMemcpiesTo[gpuIdx - 1], streamAndEvents[gpuIdx].backwardsStream);
+					cudaEventRecord(streamAndEvents[gpuIdx].backwardsEvent, streamAndEvents[gpuIdx].backwardsStream);
 				}
 			}
 		}
@@ -734,7 +769,7 @@ int main(int argc, char** argv)
 	uint gpuCount = (argc > 1) ? std::stoi(argv[1]) : 4;
 
 	const int number_of_iterations = 10;
-	const ddouble iteration_period = 0.1;
+	const ddouble iteration_period = 1.0;
 	const ddouble block_scale = PIx2 / (20.0 * sqrt(state.integrateCurvature()));
 
 	std::cout << "4 GPUs version pasimysiini" << std::endl;
