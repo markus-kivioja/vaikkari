@@ -15,14 +15,18 @@ ddouble KAPPA = 20;
 ddouble G = 5000;
 
 #define LOAD_STATE_FROM_DISK 1
-#define SAVE_PICTURE 0
-#define SAVE_VOLUME 1
+#define SAVE_PICTURE 1
+#define SAVE_VOLUME 0
 
-#define THREAD_BLOCK_X 8
-#define THREAD_BLOCK_Y 8
-#define THREAD_BLOCK_Z 1
-#define FACE_COUNT 4 // Primary faces
-#define VALUES_IN_BLOCK 12 // Dual nodes
+#define THREAD_BLOCK_X 1
+#define THREAD_BLOCK_Y 1
+#define THREAD_BLOCK_Z 16
+
+#define WARP_SIZE 32
+
+#define FACE_COUNT 4
+#define DUAL_EDGE_LENGTH 0.80256619664673123
+#define VALUES_IN_BLOCK 12
 #define INDICES_PER_BLOCK 48
 
 ddouble potentialRZ(const ddouble r, const ddouble z)
@@ -67,105 +71,210 @@ bool saveVolumeMap(const std::string& path, const Buffer<ushort>& vol, const uin
 }
 
 // bcc grid
-const Vector3 BLOCK_WIDTH = sqrt(8.0) * Vector3(1, 1, 1); // dimensions of unit block
-const ddouble VOLUME = sqrt(32.0 / 9.0); // volume of body elements
+const Vector3 BLOCK_WIDTH = Vector3(2.27, 2.27, 2.27); // dimensions of unit block
+const ddouble VOLUME = 0.97475691666666664; // volume of body elements
 const bool IS_3D = true; // 3-dimensional
 void getPositions(Buffer<Vector3>& pos)
 {
-	pos.resize(12);
-	const ddouble SQ1_8 = 1.0 / sqrt(8.0);
-	pos[0] = SQ1_8 * Vector3(1, 3, 7);
-	pos[1] = SQ1_8 * Vector3(7, 1, 3);
-	pos[2] = SQ1_8 * Vector3(7, 3, 1);
-	pos[3] = SQ1_8 * Vector3(7, 3, 5);
-	pos[4] = SQ1_8 * Vector3(7, 5, 3);
-	pos[5] = SQ1_8 * Vector3(1, 7, 3);
-	pos[6] = SQ1_8 * Vector3(3, 7, 1);
-	pos[7] = SQ1_8 * Vector3(3, 7, 5);
-	pos[8] = SQ1_8 * Vector3(5, 7, 3);
-	pos[9] = SQ1_8 * Vector3(3, 1, 7);
-	pos[10] = SQ1_8 * Vector3(3, 5, 7);
-	pos[11] = SQ1_8 * Vector3(5, 3, 7);
+	pos.resize(VALUES_IN_BLOCK);
+	pos[0] = Vector3(0.28374999999999967, 0.85124999999999962, 1.9862500000000001);
+	pos[1] = Vector3(1.9862500000000001, 0.28374999999999967, 0.85124999999999962);
+	pos[2] = Vector3(1.9862500000000001, 0.85124999999999962, 0.28374999999999967);
+	pos[3] = Vector3(1.9862500000000001, 0.85124999999999962, 1.4187499999999997);
+	pos[4] = Vector3(1.9862500000000001, 1.4187499999999997, 0.85124999999999962);
+	pos[5] = Vector3(0.28374999999999967, 1.9862500000000001, 0.85124999999999962);
+	pos[6] = Vector3(0.85124999999999962, 1.9862500000000001, 0.28374999999999967);
+	pos[7] = Vector3(0.85124999999999962, 1.9862500000000001, 1.4187499999999997);
+	pos[8] = Vector3(1.4187499999999997, 1.9862500000000001, 0.85124999999999962);
+	pos[9] = Vector3(0.85124999999999962, 0.28374999999999967, 1.9862500000000001);
+	pos[10] = Vector3(0.85124999999999962, 1.4187499999999997, 1.9862500000000001);
+	pos[11] = Vector3(1.4187499999999997, 0.85124999999999962, 1.9862500000000001);
 }
-ddouble getLaplacian(Buffer<int2>& ind, const int nx, const int ny, const int nz) // nx, ny, nz in bytes
+ddouble getLaplacian(Buffer<int3>& blockDirs, Buffer<int>& valueInds, Buffer<ddouble>& hodges)
 {
-	ind.resize(48);
-	// Primary faces of the 1. dual node
-	ind[0] = make_int2(0, 9);
-	ind[1] = make_int2(0, 10);
-	ind[2] = make_int2(nz - nx, 2);
-	ind[3] = make_int2(-nx, 3);
+	blockDirs.resize(INDICES_PER_BLOCK);
+	// Dual node idx:  0
+	blockDirs[0] = make_int3(0, 0, 0);
+	blockDirs[1] = make_int3(0, 0, 0);
+	blockDirs[2] = make_int3(-1, 0, 1);
+	blockDirs[3] = make_int3(-1, 0, 0);
+	// Dual node idx:  1
+	blockDirs[4] = make_int3(0, 0, 0);
+	blockDirs[5] = make_int3(0, 0, 0);
+	blockDirs[6] = make_int3(1, -1, 0);
+	blockDirs[7] = make_int3(0, -1, 0);
+	// Dual node idx:  2
+	blockDirs[8] = make_int3(0, 0, 0);
+	blockDirs[9] = make_int3(0, 0, 0);
+	blockDirs[10] = make_int3(1, 0, -1);
+	blockDirs[11] = make_int3(0, 0, -1);
+	// Dual node idx:  3
+	blockDirs[12] = make_int3(0, 0, 0);
+	blockDirs[13] = make_int3(0, 0, 0);
+	blockDirs[14] = make_int3(1, 0, 0);
+	blockDirs[15] = make_int3(0, 0, 0);
+	// Dual node idx:  4
+	blockDirs[16] = make_int3(0, 0, 0);
+	blockDirs[17] = make_int3(0, 0, 0);
+	blockDirs[18] = make_int3(1, 0, 0);
+	blockDirs[19] = make_int3(0, 0, 0);
+	// Dual node idx:  5
+	blockDirs[20] = make_int3(0, 0, 0);
+	blockDirs[21] = make_int3(0, 0, 0);
+	blockDirs[22] = make_int3(-1, 1, 0);
+	blockDirs[23] = make_int3(-1, 0, 0);
+	// Dual node idx:  6
+	blockDirs[24] = make_int3(0, 0, 0);
+	blockDirs[25] = make_int3(0, 0, 0);
+	blockDirs[26] = make_int3(0, 1, -1);
+	blockDirs[27] = make_int3(0, 0, -1);
+	// Dual node idx:  7
+	blockDirs[28] = make_int3(0, 0, 0);
+	blockDirs[29] = make_int3(0, 0, 0);
+	blockDirs[30] = make_int3(0, 1, 0);
+	blockDirs[31] = make_int3(0, 0, 0);
+	// Dual node idx:  8
+	blockDirs[32] = make_int3(0, 0, 0);
+	blockDirs[33] = make_int3(0, 0, 0);
+	blockDirs[34] = make_int3(0, 1, 0);
+	blockDirs[35] = make_int3(0, 0, 0);
+	// Dual node idx:  9
+	blockDirs[36] = make_int3(0, 0, 0);
+	blockDirs[37] = make_int3(0, 0, 0);
+	blockDirs[38] = make_int3(0, -1, 1);
+	blockDirs[39] = make_int3(0, -1, 0);
+	// Dual node idx:  10
+	blockDirs[40] = make_int3(0, 0, 0);
+	blockDirs[41] = make_int3(0, 0, 0);
+	blockDirs[42] = make_int3(0, 0, 1);
+	blockDirs[43] = make_int3(0, 0, 0);
+	// Dual node idx:  11
+	blockDirs[44] = make_int3(0, 0, 0);
+	blockDirs[45] = make_int3(0, 0, 0);
+	blockDirs[46] = make_int3(0, 0, 1);
+	blockDirs[47] = make_int3(0, 0, 0);
 
-	// Primary faces of the 2. dual node
-	ind[4] = make_int2(0, 2);
-	ind[5] = make_int2(0, 3);
-	ind[6] = make_int2(nx - ny, 5);
-	ind[7] = make_int2(-ny, 8);
+	valueInds.resize(INDICES_PER_BLOCK);
+	// Dual node idx:  0
+	valueInds[0] = 9;
+	valueInds[1] = 10;
+	valueInds[2] = 2;
+	valueInds[3] = 3;
+	// Dual node idx:  1
+	valueInds[4] = 2;
+	valueInds[5] = 3;
+	valueInds[6] = 5;
+	valueInds[7] = 8;
+	// Dual node idx:  2
+	valueInds[8] = 1;
+	valueInds[9] = 4;
+	valueInds[10] = 0;
+	valueInds[11] = 11;
+	// Dual node idx:  3
+	valueInds[12] = 1;
+	valueInds[13] = 4;
+	valueInds[14] = 0;
+	valueInds[15] = 11;
+	// Dual node idx:  4
+	valueInds[16] = 2;
+	valueInds[17] = 3;
+	valueInds[18] = 5;
+	valueInds[19] = 8;
+	// Dual node idx:  5
+	valueInds[20] = 6;
+	valueInds[21] = 7;
+	valueInds[22] = 1;
+	valueInds[23] = 4;
+	// Dual node idx:  6
+	valueInds[24] = 5;
+	valueInds[25] = 8;
+	valueInds[26] = 9;
+	valueInds[27] = 10;
+	// Dual node idx:  7
+	valueInds[28] = 5;
+	valueInds[29] = 8;
+	valueInds[30] = 9;
+	valueInds[31] = 10;
+	// Dual node idx:  8
+	valueInds[32] = 6;
+	valueInds[33] = 7;
+	valueInds[34] = 1;
+	valueInds[35] = 4;
+	// Dual node idx:  9
+	valueInds[36] = 0;
+	valueInds[37] = 11;
+	valueInds[38] = 6;
+	valueInds[39] = 7;
+	// Dual node idx:  10
+	valueInds[40] = 0;
+	valueInds[41] = 11;
+	valueInds[42] = 6;
+	valueInds[43] = 7;
+	// Dual node idx:  11
+	valueInds[44] = 9;
+	valueInds[45] = 10;
+	valueInds[46] = 2;
+	valueInds[47] = 3;
 
-	// Primary faces of the 3. dual node
-	ind[8] = make_int2(0, 1);
-	ind[9] = make_int2(0, 4);
-	ind[10] = make_int2(-nz + nx, 0);
-	ind[11] = make_int2(-nz, 11);
+	hodges.resize(INDICES_PER_BLOCK);
+	hodges[0] = 2.328785732306081;
+	hodges[1] = 2.3287857323060801;
+	hodges[2] = 2.3287857323060801;
+	hodges[3] = 2.3287857323060797;
+	hodges[4] = 2.328785732306081;
+	hodges[5] = 2.3287857323060801;
+	hodges[6] = 2.3287857323060801;
+	hodges[7] = 2.3287857323060797;
+	hodges[8] = 2.328785732306081;
+	hodges[9] = 2.3287857323060801;
+	hodges[10] = 2.3287857323060801;
+	hodges[11] = 2.3287857323060797;
+	hodges[12] = 2.3287857323060801;
+	hodges[13] = 2.3287857323060801;
+	hodges[14] = 2.3287857323060801;
+	hodges[15] = 2.3287857323060788;
+	hodges[16] = 2.3287857323060801;
+	hodges[17] = 2.3287857323060801;
+	hodges[18] = 2.3287857323060801;
+	hodges[19] = 2.3287857323060788;
+	hodges[20] = 2.328785732306081;
+	hodges[21] = 2.3287857323060801;
+	hodges[22] = 2.3287857323060801;
+	hodges[23] = 2.3287857323060797;
+	hodges[24] = 2.328785732306081;
+	hodges[25] = 2.3287857323060801;
+	hodges[26] = 2.3287857323060801;
+	hodges[27] = 2.3287857323060797;
+	hodges[28] = 2.3287857323060801;
+	hodges[29] = 2.3287857323060801;
+	hodges[30] = 2.3287857323060801;
+	hodges[31] = 2.3287857323060788;
+	hodges[32] = 2.3287857323060801;
+	hodges[33] = 2.3287857323060801;
+	hodges[34] = 2.3287857323060801;
+	hodges[35] = 2.3287857323060788;
+	hodges[36] = 2.328785732306081;
+	hodges[37] = 2.3287857323060801;
+	hodges[38] = 2.3287857323060801;
+	hodges[39] = 2.3287857323060797;
+	hodges[40] = 2.3287857323060801;
+	hodges[41] = 2.3287857323060801;
+	hodges[42] = 2.3287857323060801;
+	hodges[43] = 2.3287857323060788;
+	hodges[44] = 2.3287857323060801;
+	hodges[45] = 2.3287857323060801;
+	hodges[46] = 2.3287857323060801;
+	hodges[47] = 2.3287857323060788;
 
-	// Primary faces of the 4. dual node
-	ind[12] = make_int2(0, 1);
-	ind[13] = make_int2(0, 4);
-	ind[14] = make_int2(nx, 0);
-	ind[15] = make_int2(0, 11);
-
-	// Primary faces of the 5. dual node
-	ind[16] = make_int2(0, 2);
-	ind[17] = make_int2(0, 3);
-	ind[18] = make_int2(nx, 5);
-	ind[19] = make_int2(0, 8);
-
-	// Primary faces of the 6. dual node
-	ind[20] = make_int2(0, 6);
-	ind[21] = make_int2(0, 7);
-	ind[22] = make_int2(-nx + ny, 1);
-	ind[23] = make_int2(-nx, 4);
-
-	// Primary faces of the 7. dual node
-	ind[24] = make_int2(0, 5);
-	ind[25] = make_int2(0, 8);
-	ind[26] = make_int2(-nz + ny, 9);
-	ind[27] = make_int2(-nz, 10);
-
-	// Primary faces of the 8. dual node
-	ind[28] = make_int2(0, 5);
-	ind[29] = make_int2(0, 8);
-	ind[30] = make_int2(ny, 9);
-	ind[31] = make_int2(0, 10);
-
-	// Primary faces of the 9. dual node
-	ind[32] = make_int2(0, 6);
-	ind[33] = make_int2(0, 7);
-	ind[34] = make_int2(ny, 1);
-	ind[35] = make_int2(0, 4);
-
-	// Primary faces of the 10. dual node
-	ind[36] = make_int2(0, 0);
-	ind[37] = make_int2(0, 11);
-	ind[38] = make_int2(nz - ny, 6);
-	ind[39] = make_int2(-ny, 7);
-
-	// Primary faces of the 11. dual node
-	ind[40] = make_int2(0, 0);
-	ind[41] = make_int2(0, 11);
-	ind[42] = make_int2(nz, 6);
-	ind[43] = make_int2(0, 7);
-
-	// Primary faces of the 12. dual node
-	ind[44] = make_int2(0, 9);
-	ind[45] = make_int2(0, 10);
-	ind[46] = make_int2(nz, 2);
-	ind[47] = make_int2(0, 3);
-
-	return 1.5;
+	return 2.328785732306081;
 }
 
 struct BlockPsis
+{
+	double2 values[VALUES_IN_BLOCK];
+};
+
+struct LdsBlockPsis
 {
 	double2 values[VALUES_IN_BLOCK];
 };
@@ -187,6 +296,10 @@ inline __host__ __device__ double2 operator+(double2 a, double2 b)
 {
 	return make_double2(a.x + b.x, a.y + b.y);
 }
+inline __host__ __device__ double2 operator-(double2 a, double2 b)
+{
+	return make_double2(a.x - b.x, a.y - b.y);
+}
 inline __host__ __device__ void operator+=(double2& a, double2 b)
 {
 	a.x += b.x;
@@ -197,49 +310,88 @@ inline __host__ __device__ double2 operator*(double b, double2 a)
 	return make_double2(b * a.x, b * a.y);
 }
 
-__global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr potentials, int2* lapInd, double2 lapfacs, double g, uint3 dimensions)
+__device__ const uint perms[VALUES_IN_BLOCK][FACE_COUNT] = {
+		{3, 2, 0, 1}, // 0
+		{2, 0, 1, 3}, // 1
+		{1, 0, 2, 3}, // 2
+		{1, 0, 2, 3}, // 3 
+		{2, 0, 1, 3}, // 4
+		{3, 1, 0, 2}, // 5
+		{0, 1, 2, 3}, // 6
+		{0, 1, 2, 3}, // 7
+		{3, 1, 0, 2}, // 8
+		{2, 3, 0, 1}, // 9
+		{2, 3, 0, 1}, // 10
+		{3, 2, 0, 1}  // 11
+};
+
+__global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr potentials, int3* blockDirs, int* valueInds, double* hodges, double g, uint3 dimensions)
 {
 	size_t xid = blockIdx.x * blockDim.x + threadIdx.x;
 	size_t yid = blockIdx.y * blockDim.y + threadIdx.y;
 	size_t zid = blockIdx.z * blockDim.z + threadIdx.z;
+	size_t dataXid = xid / VALUES_IN_BLOCK; // One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
 
-	// Load Laplacian indices into LDS
-	//__shared__ int2 ldsLapInd[INDICES_PER_BLOCK];
-	//size_t threadIdxInBlock = blockDim.x * blockDim.y * threadIdx.z + blockDim.x * threadIdx.y + threadIdx.x;
-	//if (threadIdxInBlock < INDICES_PER_BLOCK)
-	//{
-	//	ldsLapInd[threadIdxInBlock] = lapInd[threadIdxInBlock];
-	//}
-	//__syncthreads();
-
-	size_t dataZid = zid / VALUES_IN_BLOCK; // One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
-
-	// Exit leftover threads
-	if (xid >= dimensions.x || yid >= dimensions.y || dataZid >= dimensions.z)
+	// Kill the leftover threads but leave threads for the additional zero buffer at the edges
+	if (dataXid > dimensions.x || yid > dimensions.y || zid > dimensions.z)
 	{
 		return;
 	}
 
-	// Calculate the pointers for this block
-	char* prevPsi = prevStep.ptr + prevStep.slicePitch * dataZid + prevStep.pitch * yid + sizeof(BlockPsis) * xid;
-	BlockPsis* nextPsi = (BlockPsis*)(nextStep.ptr + nextStep.slicePitch * dataZid + nextStep.pitch * yid) + xid;
-	BlockPots* pot = (BlockPots*)(potentials.ptr + potentials.slicePitch * dataZid + potentials.pitch * yid) + xid;
+	__shared__ LdsBlockPsis ldsPrevPsis[THREAD_BLOCK_Z * THREAD_BLOCK_Y * THREAD_BLOCK_X];
+	size_t threadIdxInBlock = threadIdx.z * THREAD_BLOCK_Y * THREAD_BLOCK_X + threadIdx.y * THREAD_BLOCK_X + threadIdx.x / VALUES_IN_BLOCK;
 
-	// Update psi
-	size_t dualNodeId = zid % VALUES_IN_BLOCK; // Dual node id. One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
+	size_t dualNodeId = xid % VALUES_IN_BLOCK; // Dual node id. One thread per every dual node so VALUES_IN_BLOCK threads per mesh block (on z-axis)
 
-	// 4 primary faces
-	uint face = dualNodeId * FACE_COUNT;
-	double2 sum = (*(BlockPsis*)(prevPsi + lapInd[face].x)).values[lapInd[face++].y];
-	sum += (*(BlockPsis*)(prevPsi + lapInd[face].x)).values[lapInd[face++].y];
-	sum += (*(BlockPsis*)(prevPsi + lapInd[face].x)).values[lapInd[face++].y];
-	sum += (*(BlockPsis*)(prevPsi + lapInd[face].x)).values[lapInd[face++].y];
-
-	double2 prev = (*(BlockPsis*)prevPsi).values[dualNodeId];
+	char* prevPsi = prevStep.ptr + prevStep.slicePitch * zid + prevStep.pitch * yid + sizeof(BlockPsis) * dataXid;
+	BlockPots* pot = (BlockPots*)(potentials.ptr + potentials.slicePitch * zid + potentials.pitch * yid) + dataXid;
+	BlockPsis* nextPsi = (BlockPsis*)(nextStep.ptr + nextStep.slicePitch * zid + nextStep.pitch * yid) + dataXid;
+	double2 prev = ((BlockPsis*)prevPsi)->values[dualNodeId];
+	ldsPrevPsis[threadIdxInBlock].values[dualNodeId] = prev;
 	double normsq = prev.x * prev.x + prev.y * prev.y;
-	sum = lapfacs.x * sum + (lapfacs.y + (*pot).values[dualNodeId] + g * normsq) * prev;
 
-	(*nextPsi).values[dualNodeId] += make_double2(sum.y, -sum.x);
+	// Kill also the leftover edge threads
+	if (dataXid == dimensions.x || yid == dimensions.y || zid == dimensions.z)
+	{
+		return;
+	}
+
+	uint idxInWarp = threadIdxInBlock % WARP_SIZE;
+
+	uint primaryFaceStart = dualNodeId * FACE_COUNT;
+	double2 sum = make_double2(0, 0);
+
+	__syncthreads();
+#pragma unroll
+	for (int i = 0; i < FACE_COUNT; ++i)
+	{
+		uint primaryFace = primaryFaceStart + perms[dualNodeId][i];
+
+		int neighbourX = threadIdx.x / VALUES_IN_BLOCK + blockDirs[primaryFace].x;
+		int neighbourY = threadIdx.y + blockDirs[primaryFace].y;
+		int neighbourZ = threadIdx.z + blockDirs[primaryFace].z;
+
+		double2 neighbourPsi;
+
+		// Read from the local shared memory
+		if ((0 <= neighbourX) && (neighbourX < THREAD_BLOCK_X) &&
+			(0 <= neighbourY) && (neighbourY < THREAD_BLOCK_Y) &&
+			(0 <= neighbourZ) && (neighbourZ < THREAD_BLOCK_Z))
+		{
+			int neighbourIdx = neighbourZ * THREAD_BLOCK_Y * THREAD_BLOCK_X + neighbourY * THREAD_BLOCK_X + neighbourX;
+			neighbourPsi = ldsPrevPsis[neighbourIdx].values[valueInds[primaryFace]];
+		}
+		else // Read from the global memory
+		{
+			int offset = blockDirs[primaryFace].z * prevStep.slicePitch + blockDirs[primaryFace].y * prevStep.pitch + blockDirs[primaryFace].x * sizeof(BlockPsis);
+			neighbourPsi = ((BlockPsis*)(prevPsi + offset))->values[valueInds[primaryFace]];
+		}
+		sum += hodges[primaryFace] * (neighbourPsi - prev);
+	}
+
+	sum += (pot->values[dualNodeId] + g * normsq) * prev;
+
+	nextPsi->values[dualNodeId] += make_double2(sum.y, -sum.x);
 };
 
 uint integrateInTime(const VortexState& state, const ddouble block_scale, const Vector3& minp, const Vector3& maxp, const ddouble iteration_period, const uint number_of_iterations, uint gpuCount)
@@ -263,7 +415,9 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 			zSizes[gpuIdx]++;
 			zRemainder--;
 		}
+		std::cout << "GPU " << gpuIdx << " z-size: " << zSizes[gpuIdx] << ", ";
 	}
+	std::cout << std::endl;
 
 	//std::cout << xsize << ", " << ysize << ", " << zsize << std::endl;
 
@@ -304,9 +458,12 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 		}
 	}
 
-	Buffer<int2> dummyLapind;
-	ddouble lapfac = -0.5 * getLaplacian(dummyLapind, 0, 0, 0) / (block_scale * block_scale);
-	const uint lapsize = dummyLapind.size() / bsize;
+	// find terms for laplacian
+	Buffer<int3> blockDirs;
+	Buffer<int> valueInds;
+	Buffer<ddouble> hodges;
+	ddouble lapfac = -0.5 * getLaplacian(blockDirs, valueInds, hodges) / (block_scale * block_scale);
+	const uint lapsize = blockDirs.size() / bsize;
 	ddouble lapfac0 = lapsize * (-lapfac);
 
 	// compute time step size
@@ -320,6 +477,7 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 	lapfac *= time_step_size;
 	lapfac0 *= time_step_size;
 	for (i = 0; i < vsize; i++) pot[i] *= time_step_size;
+	for (int i = 0; i < hodges.size(); ++i) hodges[i] = -0.5 * hodges[i] / (block_scale * block_scale) * time_step_size;
 
 	// Initialize host memory
 	size_t dxsize = xsize + 2; // One element buffer to both ends
@@ -368,7 +526,9 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 	std::vector<PitchedPtr> d_evenPsis(gpuCount);
 	std::vector<PitchedPtr> d_oddPsis(gpuCount);
 	std::vector<PitchedPtr> d_pots(gpuCount);
-	std::vector<int2*> d_lapinds(gpuCount);
+	std::vector<int3*> d_blockDirs(gpuCount);
+	std::vector<int*> d_valueInds(gpuCount);
+	std::vector<ddouble*> d_hodges(gpuCount);
 	std::vector<cudaPitchedPtr> h_cudaEvenPsis(gpuCount);
 	std::vector<cudaPitchedPtr> h_cudaOddPsis(gpuCount);
 	std::vector<cudaPitchedPtr> h_cudaPots(gpuCount);
@@ -391,7 +551,7 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 				cudaDeviceCanAccessPeer(&canAccessPeer, gpuIdx, peerGpu);
 				if ((canAccessPeer == 1) && cudaDeviceEnablePeerAccess(peerGpu, 0) == cudaSuccess)
 				{
-					//std::cout << "GPU " << gpuIdx << " can access GPU " << peerGpu << std::endl;
+					std::cout << "GPU " << gpuIdx << " can access GPU " << peerGpu << std::endl;
 				}
 				else
 				{
@@ -413,11 +573,9 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 		d_oddPsis[gpuIdx] = d_oddPsi;
 		d_pots[gpuIdx] = d_pot;
 
-		// find terms for laplacian
-		Buffer<int2> lapind;
-		getLaplacian(lapind, sizeof(BlockPsis), d_evenPsis[gpuIdx].pitch, d_evenPsis[gpuIdx].slicePitch);
-
-		checkCudaErrors(cudaMalloc(&d_lapinds[gpuIdx], lapind.size() * sizeof(int2)));
+		checkCudaErrors(cudaMalloc(&d_blockDirs[gpuIdx], blockDirs.size() * sizeof(int3)));
+		checkCudaErrors(cudaMalloc(&d_valueInds[gpuIdx], valueInds.size() * sizeof(int)));
+		checkCudaErrors(cudaMalloc(&d_hodges[gpuIdx], hodges.size() * sizeof(ddouble)));
 
 		bool first = (gpuIdx == 0);
 
@@ -459,16 +617,20 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 		checkCudaErrors(cudaMemcpy3DAsync(&evenPsiParams));
 		checkCudaErrors(cudaMemcpy3DAsync(&oddPsiParams));
 		checkCudaErrors(cudaMemcpy3DAsync(&potParams));
-		checkCudaErrors(cudaMemcpyAsync(d_lapinds[gpuIdx], &lapind[0], lapind.size() * sizeof(int2), cudaMemcpyHostToDevice));
+		checkCudaErrors(cudaMemcpy(d_blockDirs[gpuIdx], &blockDirs[0], blockDirs.size() * sizeof(int3), cudaMemcpyHostToDevice));
+		checkCudaErrors(cudaMemcpy(d_valueInds[gpuIdx], &valueInds[0], valueInds.size() * sizeof(int), cudaMemcpyHostToDevice));
+		checkCudaErrors(cudaMemcpy(d_hodges[gpuIdx], &hodges[0], hodges.size() * sizeof(ddouble), cudaMemcpyHostToDevice));
 
 		cudaDeviceSynchronize();
-		lapind.clear();
 	}
 
 	// Clear host memory after data has been copied to devices
 	Psi0.clear();
 	pot.clear();
 	bpos.clear();
+	blockDirs.clear();
+	valueInds.clear();
+	hodges.clear();
 	cudaFreeHost(h_oddPsi);
 	cudaFreeHost(h_pot);
 #if !(SAVE_PICTURE || SAVE_VOLUME)
@@ -476,7 +638,7 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 #endif
 
 	// Integrate in time
-	dim3 dimBlock(THREAD_BLOCK_X, THREAD_BLOCK_Y, THREAD_BLOCK_Z * VALUES_IN_BLOCK);
+	dim3 dimBlock(THREAD_BLOCK_X * VALUES_IN_BLOCK, THREAD_BLOCK_Y, THREAD_BLOCK_Z);
 	std::vector<dim3> dimGrids(gpuCount);
 	std::vector<uint3> dimensions(gpuCount);
 	for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
@@ -655,7 +817,7 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 					cudaStreamWaitEvent(streamAndEvents[gpuIdx].kernelStream, streamAndEvents[gpuIdx - 1].forwardsEvent, 0);
 
 				// Launch the CUDA kernel, even -> odd
-				update << <dimGrids[gpuIdx], dimBlock, 0, streamAndEvents[gpuIdx].kernelStream >> > (d_oddPsis[gpuIdx], d_evenPsis[gpuIdx], d_pots[gpuIdx], d_lapinds[gpuIdx], lapfacs, g, dimensions[gpuIdx]);
+				update << <dimGrids[gpuIdx], dimBlock, 0, streamAndEvents[gpuIdx].kernelStream >> > (d_oddPsis[gpuIdx], d_evenPsis[gpuIdx], d_pots[gpuIdx], d_blockDirs[gpuIdx], d_valueInds[gpuIdx], d_hodges[gpuIdx], g, dimensions[gpuIdx]);
 
 				cudaEventRecord(streamAndEvents[gpuIdx].kernelEvent, streamAndEvents[gpuIdx].kernelStream);
 			}
@@ -687,7 +849,7 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 					cudaStreamWaitEvent(streamAndEvents[gpuIdx].kernelStream, streamAndEvents[gpuIdx - 1].forwardsEvent, 0);
 
 				// Launch the CUDA kernel, odd -> even
-				update << <dimGrids[gpuIdx], dimBlock, 0, streamAndEvents[gpuIdx].kernelStream >> > (d_evenPsis[gpuIdx], d_oddPsis[gpuIdx], d_pots[gpuIdx], d_lapinds[gpuIdx], lapfacs, g, dimensions[gpuIdx]);
+				update << <dimGrids[gpuIdx], dimBlock, 0, streamAndEvents[gpuIdx].kernelStream >> > (d_evenPsis[gpuIdx], d_oddPsis[gpuIdx], d_pots[gpuIdx], d_blockDirs[gpuIdx], d_valueInds[gpuIdx], d_hodges[gpuIdx], g, dimensions[gpuIdx]);
 
 				cudaEventRecord(streamAndEvents[gpuIdx].kernelEvent, streamAndEvents[gpuIdx].kernelStream);
 			}
@@ -768,11 +930,11 @@ int main(int argc, char** argv)
 #endif
 	uint gpuCount = (argc > 1) ? std::stoi(argv[1]) : 4;
 
-	const int number_of_iterations = 10;
+	const int number_of_iterations = 4;
 	const ddouble iteration_period = 1.0;
 	const ddouble block_scale = PIx2 / (20.0 * sqrt(state.integrateCurvature()));
 
-	std::cout << "4 GPUs version pasimysiini" << std::endl;
+	std::cout << gpuCount << " GPUs" << std::endl;
 	std::cout << "kappa = " << KAPPA << std::endl;
 	std::cout << "g = " << G << std::endl;
 	std::cout << "block_scale = " << block_scale << std::endl;
