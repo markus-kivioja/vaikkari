@@ -804,7 +804,7 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 		if (++iter > number_of_iterations) break;
 
 		// integrate one iteration
-		std::cout << "Iteration " << iter << std::endl;
+		//std::cout << "Iteration " << iter << std::endl;
 		for (uint step = 0; step < steps_per_iteration; step++)
 		{
 			// update odd values
@@ -880,6 +880,7 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 		}
 #endif
 	}
+	cudaDeviceSynchronize();
 	std::cout << "iteration time = " << (1e-6 * (clock() - time0)) / number_of_iterations << std::endl;
 	std::cout << "total time = " << 1e-6 * (clock() - time0) << std::endl;
 
