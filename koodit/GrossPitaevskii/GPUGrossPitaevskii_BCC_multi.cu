@@ -7,8 +7,10 @@
 #include "../../jukan_koodit/Types/Complex.hpp"
 #include "../../jukan_koodit/Types/Random.hpp"
 #include "../../jukan_koodit/Mesh/DelaunayMesh.hpp"
+
 #include <iostream>
 #include <sstream>
+#include <chrono>
 
 ddouble RATIO = 0.1;
 ddouble KAPPA = 20;
@@ -394,7 +396,7 @@ __global__ void update(PitchedPtr nextStep, PitchedPtr prevStep, PitchedPtr pote
 	nextPsi->values[dualNodeId] += make_double2(sum.y, -sum.x);
 };
 
-uint integrateInTime(const VortexState& state, const ddouble block_scale, const Vector3& minp, const Vector3& maxp, const ddouble iteration_period, const uint number_of_iterations, uint gpuCount)
+ddouble integrateInTime(const VortexState& state, const ddouble block_scale, const Vector3& minp, const Vector3& maxp, const ddouble iteration_period, const uint number_of_iterations, uint gpuCount, bool enablePeerAccess = true)
 {
 	uint i, j, k, l;
 
@@ -415,11 +417,12 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 			zSizes[gpuIdx]++;
 			zRemainder--;
 		}
-		std::cout << "GPU " << gpuIdx << " z-size: " << zSizes[gpuIdx] << ", ";
+		//std::cout << "GPU " << gpuIdx << " z-size: " << zSizes[gpuIdx] << ", ";
 	}
-	std::cout << std::endl;
+	//std::cout << std::endl;
 
-	std::cout << "z-slice size: " << xsize << ", " << ysize << std::endl;
+	std::cout << "Problem size: " << xsize << ", " << ysize << ", " << zsize << std::endl;
+	//std::cout << "z-slice size: " << xsize << ", " << ysize << std::endl;
 
 	// find relative circumcenters for each body element
 	Buffer<Vector3> bpos;
@@ -432,7 +435,7 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 	const uint ii0 = (IS_3D ? bxysize : 0) + bxsize + bsize; // reserved zeros in the beginning of value table
 	const uint vsize = ii0 + (IS_3D ? zsize + 1 : zsize) * bxysize; // total number of values
 
-	std::cout << "bodies = " << xsize * ysize * zsize * bsize << std::endl;
+	//std::cout << "bodies = " << xsize * ysize * zsize * bsize << std::endl;
 
 	// initialize stationary state
 	Buffer<Complex> Psi0(vsize, Complex(0, 0)); // initial discrete wave function
@@ -467,7 +470,7 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 	ddouble lapfac0 = lapsize * (-lapfac);
 
 	// compute time step size
-	const uint steps_per_iteration = uint(iteration_period * (maxpot + lapfac0)) + 1; // number of time steps per iteration period
+	const uint steps_per_iteration = 691; // uint(iteration_period * (maxpot + lapfac0)) + 1; // number of time steps per iteration period
 	const ddouble time_step_size = iteration_period / ddouble(steps_per_iteration); // time step in time units
 
 	std::cout << "steps_per_iteration = " << steps_per_iteration << std::endl;
@@ -543,22 +546,27 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 		cudaExtent potExtent = make_cudaExtent(dxsize * sizeof(BlockPots), dysize, dzSizes[gpuIdx]);
 
 		cudaSetDevice(gpuIdx);
-		for (uint peerGpu = 0; peerGpu < gpuCount; ++peerGpu)
+
+		if (enablePeerAccess)
 		{
-			if (peerGpu != gpuIdx)
+			for (uint peerGpu = 0; peerGpu < gpuCount; ++peerGpu)
 			{
-				int canAccessPeer;
-				cudaDeviceCanAccessPeer(&canAccessPeer, gpuIdx, peerGpu);
-				if ((canAccessPeer == 1) && cudaDeviceEnablePeerAccess(peerGpu, 0) == cudaSuccess)
+				if (peerGpu != gpuIdx)
 				{
-					std::cout << "GPU " << gpuIdx << " can access GPU " << peerGpu << std::endl;
-				}
-				else
-				{
-					std::cout << "GPU " << gpuIdx << " can NOT access GPU " << peerGpu << std::endl;
+					int canAccessPeer;
+					cudaDeviceCanAccessPeer(&canAccessPeer, gpuIdx, peerGpu);
+					if ((canAccessPeer == 1) && cudaDeviceEnablePeerAccess(peerGpu, 0) == cudaSuccess)
+					{
+						//std::cout << "GPU " << gpuIdx << " can access GPU " << peerGpu << std::endl;
+					}
+					else
+					{
+						//std::cout << "GPU " << gpuIdx << " can NOT access GPU " << peerGpu << std::endl;
+					}
 				}
 			}
 		}
+
 		checkCudaErrors(cudaMalloc3D(&d_cudaEvenPsis[gpuIdx], psiExtents[gpuIdx]));
 		checkCudaErrors(cudaMalloc3D(&d_cudaOddPsis[gpuIdx], psiExtents[gpuIdx]));
 		checkCudaErrors(cudaMalloc3D(&d_cudaPots[gpuIdx], potExtent));
@@ -746,8 +754,8 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 #endif
 	double2 lapfacs = make_double2(lapfac, lapfac0);
 
-	const uint time0 = clock();
 	uint iter = 0;
+	auto startTime = std::chrono::system_clock::now();
 	while (true)
 	{
 #if SAVE_PICTURE || SAVE_VOLUME
@@ -880,9 +888,14 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 		}
 #endif
 	}
-	cudaDeviceSynchronize();
-	std::cout << "iteration time = " << (1e-6 * (clock() - time0)) / number_of_iterations << std::endl;
-	std::cout << "total time = " << 1e-6 * (clock() - time0) << std::endl;
+	for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
+	{
+		cudaSetDevice(gpuIdx);
+		cudaDeviceSynchronize();
+	}
+	auto duration = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - startTime).count() * 1e-6;
+	std::cout << "Duration for of the integration of one time unit: " << duration / number_of_iterations << std::endl;
+	std::cout << "Total duration: " << duration << std::endl;
 
 	cudaError_t err = cudaGetLastError();
 	if (err != cudaSuccess)
@@ -891,7 +904,16 @@ uint integrateInTime(const VortexState& state, const ddouble block_scale, const 
 		exit(EXIT_FAILURE);
 	}
 
-	return 0;
+	for (uint gpuIdx = 0; gpuIdx < gpuCount; ++gpuIdx)
+	{
+		checkCudaErrors(cudaFree(d_cudaEvenPsis[gpuIdx].ptr));
+		checkCudaErrors(cudaFree(d_cudaOddPsis[gpuIdx].ptr));
+		checkCudaErrors(cudaFree(d_cudaPots[gpuIdx].ptr));
+		checkCudaErrors(cudaFree(d_blockDirs[gpuIdx]));
+		checkCudaErrors(cudaFree(d_valueInds[gpuIdx]));
+		checkCudaErrors(cudaFree(d_hodges[gpuIdx]));
+	}
+	return duration;
 }
 
 int main(int argc, char** argv)
@@ -931,21 +953,41 @@ int main(int argc, char** argv)
 #endif
 	uint gpuCount = (argc > 1) ? std::stoi(argv[1]) : 4;
 
-	const int number_of_iterations = 4;
+	const int number_of_iterations = 1;
 	const ddouble iteration_period = 1.0;
-	const ddouble block_scale = PIx2 / (20.0 * sqrt(state.integrateCurvature()));
+	ddouble blockScale = (argc > 2) ? std::stod(argv[2]) : 0.0391; // PIx2 / (20.0 * sqrt(state.integrateCurvature()));
 
 	std::cout << gpuCount << " GPUs" << std::endl;
 	std::cout << "kappa = " << KAPPA << ", " << state.getKappa() << std::endl;
 	std::cout << "g = " << G << ", " << state.getG() << std::endl;
-	std::cout << "block_scale = " << block_scale << std::endl;
 	std::cout << "iteration_period = " << iteration_period << std::endl;
 	std::cout << "maxr = " << maxr << std::endl;
 	std::cout << "maxz = " << maxz << std::endl;
 
-	// integrate in time using DEC
-	if (IS_3D) integrateInTime(state, block_scale, Vector3(-maxr, -maxr, -maxz), Vector3(maxr, maxr, maxz), iteration_period, number_of_iterations, gpuCount); // use this for 3d
-	else integrateInTime(state, block_scale, Vector3(-maxr, -maxr, 0.0), Vector3(maxr, maxr, 0.0), iteration_period, number_of_iterations, gpuCount); // use this for 2d
+	const ddouble EPSILON = 0.02;
+	const ddouble TARGET = 7.1725;
+	bool firstIter = true;
+	while (true)
+	{
+		std::cout << "Block scale: " << blockScale << std::endl;
+
+		auto time = integrateInTime(state, blockScale, Vector3(-maxr, -maxr, -maxz), Vector3(maxr, maxr, maxz), iteration_period, number_of_iterations, gpuCount, firstIter);
+
+		auto timeDelta = time - TARGET;
+		if (abs(timeDelta) < EPSILON)
+		{
+			break;
+		}
+		blockScale += std::pow(0.4 * timeDelta, 3);
+
+		if (blockScale < 0)
+		{
+			std::cout << "SCALE BECAME NEGATIVE!" << std::endl;
+			return 0;
+		}
+		std::cout << std::endl;
+		firstIter = false;
+	}
 
 	return 0;
 }
